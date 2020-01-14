@@ -34,6 +34,8 @@
 #include "drv8320s.h"
 #include "drv8323s.h"
 #include "app.h"
+#include "comm_usb.h"
+#include "comm_usb_serial.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -448,6 +450,13 @@ void terminal_process_string(char *str) {
 		commands_printf("FOC Current Offsets: %d %d %d",
 				curr0_offset, curr1_offset, curr2_offset);
 
+#ifdef COMM_USE_USB
+		commands_printf("USB config events: %d", comm_usb_serial_configured_cnt());
+		commands_printf("USB write timeouts: %u", comm_usb_get_write_timeout_cnt());
+#else
+		commands_printf("USB not enabled on hardware.");
+#endif
+
 		commands_printf(" ");
 	} else if (strcmp(argv[0], "foc_openloop") == 0) {
 		if (argc == 3) {
@@ -667,7 +676,8 @@ void terminal_process_string(char *str) {
 		}
 	} else if (strcmp(argv[0], "encoder") == 0) {
 		if (mcconf.m_sensor_port_mode == SENSOR_PORT_MODE_AS5047_SPI ||
-			mcconf.m_sensor_port_mode == SENSOR_PORT_MODE_AD2S1205) {
+			mcconf.m_sensor_port_mode == SENSOR_PORT_MODE_AD2S1205 ||
+			mcconf.m_sensor_port_mode == SENSOR_PORT_MODE_TS5700N8501) {
 			commands_printf("SPI encoder value: %x, errors: %d, error rate: %.3f %%",
 				(unsigned int)encoder_spi_get_val(),
 				encoder_spi_get_error_cnt(),
@@ -683,6 +693,8 @@ void terminal_process_string(char *str) {
 				encoder_sincos_get_signal_above_max_error_cnt(),
 				(double)encoder_sincos_get_signal_above_max_error_rate() * (double)100.0);
 		}
+	} else if (strcmp(argv[0], "uptime") == 0) {
+		commands_printf("Uptime: %.2f s\n", (double)chVTGetSystemTimeX() / (double)CH_CFG_ST_FREQUENCY);
 	}
 
 	// The help command
@@ -796,7 +808,10 @@ void terminal_process_string(char *str) {
 		commands_printf("  initiates detection in all VESCs found on the CAN-bus.");
 		
 		commands_printf("encoder");
-		commands_printf("  Prints the status of the AS5047, AD2S1205, or Sin/Cos encoder.");
+		commands_printf("  Prints the status of the AS5047, AD2S1205, or TS5700N8501 encoder.");
+
+		commands_printf("uptime");
+		commands_printf("  Prints how many seconds have passed since boot.");
 
 		for (int i = 0;i < callback_write;i++) {
 			if (callbacks[i].cbf == 0) {

@@ -36,6 +36,9 @@
 #include "gpdrive.h"
 #include "comm_can.h"
 #include "shutdown.h"
+#include "app.h"
+#include "utils.h"
+
 #include <math.h>
 #include <stdlib.h>
 
@@ -96,6 +99,10 @@ static volatile debug_sampling_mode m_sample_mode_last;
 static volatile int m_sample_now;
 static volatile int m_sample_trigger;
 static volatile float m_last_adc_duration_sample;
+
+#if !WS2811_ENABLE
+static app_configuration m_tmp_appconf;
+#endif
 
 // Private functions
 static void update_override_limits(volatile mc_configuration *conf);
@@ -184,6 +191,18 @@ void mc_interface_init(mc_configuration *configuration) {
 							m_conf.foc_encoder_sincos_filter_constant);
 		break;
 
+	case SENSOR_PORT_MODE_TS5700N8501:
+		conf_general_read_app_configuration(&m_tmp_appconf);
+		if (m_tmp_appconf.app_to_use == APP_ADC ||
+				m_tmp_appconf.app_to_use == APP_UART ||
+				m_tmp_appconf.app_to_use == APP_PPM_UART ||
+				m_tmp_appconf.app_to_use == APP_ADC_UART) {
+			m_tmp_appconf.app_to_use = APP_NONE;
+			conf_general_store_app_configuration(&m_tmp_appconf);
+		}
+		encoder_init_ts5700n8501();
+		break;
+
 	default:
 		break;
 	}
@@ -235,6 +254,19 @@ void mc_interface_set_configuration(mc_configuration *configuration) {
 								m_conf.foc_encoder_cos_gain, m_conf.foc_encoder_cos_offset,
 								m_conf.foc_encoder_sincos_filter_constant);
 			break;
+
+		case SENSOR_PORT_MODE_TS5700N8501: {
+			m_tmp_appconf = *app_get_configuration();
+			if (m_tmp_appconf.app_to_use == APP_ADC ||
+					m_tmp_appconf.app_to_use == APP_UART ||
+					m_tmp_appconf.app_to_use == APP_PPM_UART ||
+					m_tmp_appconf.app_to_use == APP_ADC_UART) {
+				m_tmp_appconf.app_to_use = APP_NONE;
+				conf_general_store_app_configuration(&m_tmp_appconf);
+				app_set_configuration(&m_tmp_appconf);
+			}
+			encoder_init_ts5700n8501();
+		} break;
 
 		default:
 			break;
@@ -949,6 +981,27 @@ float mc_interface_get_abs_motor_current_unbalance(void) {
 	}
 #endif
 	return ret;
+}
+
+int mc_interface_set_tachometer_value(int steps)
+{
+	int ret = 0;
+	switch (m_conf.motor_type)
+	{
+	case MOTOR_TYPE_BLDC:
+	case MOTOR_TYPE_DC:
+		ret = mcpwm_set_tachometer_value(DIR_MULT * steps);
+		break;
+
+	case MOTOR_TYPE_FOC:
+		ret = mcpwm_foc_set_tachometer_value(DIR_MULT * steps);
+		break;
+
+	default:
+		break;
+	}
+
+	return DIR_MULT * ret;
 }
 
 int mc_interface_get_tachometer_value(bool reset) {
@@ -1695,7 +1748,17 @@ static void update_override_limits(volatile mc_configuration *conf) {
 	const float rpm_now = mc_interface_get_rpm();
 
 	UTILS_LP_FAST(m_temp_fet, NTC_TEMP(ADC_IND_TEMP_MOS), 0.1);
-	UTILS_LP_FAST(m_temp_motor, NTC_TEMP_MOTOR(conf->m_ntc_motor_beta), 0.1);
+	if (conf->m_motor_temp_sens_type == TEMP_SENSOR_NTC_10K_25C) {
+		UTILS_LP_FAST(m_temp_motor, NTC_TEMP_MOTOR(conf->m_ntc_motor_beta), 0.1);
+	} else if (conf->m_motor_temp_sens_type == TEMP_SENSOR_PTC_1K_100C) {
+		float temp = PTC_TEMP_MOTOR(1000.0, conf->m_ptc_motor_coeff, 100);
+		
+		if (UTILS_IS_NAN(temp) || UTILS_IS_INF(temp) || temp > 600.0) {
+			temp = 180.0;
+		}
+		
+		UTILS_LP_FAST(m_temp_motor, temp, 0.1);
+	}
 #ifdef HW_VERSION_AXIOM
 	UTILS_LP_FAST(m_gate_driver_voltage, GET_GATE_DRIVER_SUPPLY_VOLTAGE(), 0.01);
 #endif

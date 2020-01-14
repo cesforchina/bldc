@@ -60,8 +60,15 @@ typedef enum {
 	OUT_AUX_MODE_OFF = 0,
 	OUT_AUX_MODE_ON_AFTER_2S,
 	OUT_AUX_MODE_ON_AFTER_5S,
-	OUT_AUX_MODE_ON_AFTER_10S
+	OUT_AUX_MODE_ON_AFTER_10S,
+	OUT_AUX_MODE_UNUSED
 } out_aux_mode;
+
+// Temperature sensor type
+typedef enum {
+	TEMP_SENSOR_NTC_10K_25C = 0,
+	TEMP_SENSOR_PTC_1K_100C
+} temp_sensor_type;
 
 // General purpose drive output mode
 typedef enum {
@@ -77,6 +84,19 @@ typedef enum {
 	MOTOR_TYPE_FOC,
 	MOTOR_TYPE_GPD
 } mc_motor_type;
+
+// FOC current controller decoupling mode.
+typedef enum {
+	FOC_CC_DECOUPLING_DISABLED = 0,
+	FOC_CC_DECOUPLING_CROSS,
+	FOC_CC_DECOUPLING_BEMF,
+	FOC_CC_DECOUPLING_CROSS_BEMF
+} mc_foc_cc_decoupling_mode;
+
+typedef enum {
+	FOC_OBSERVER_ORTEGA_ORIGINAL = 0,
+	FOC_OBSERVER_ORTEGA_ITERATIVE
+} mc_foc_observer_type;
 
 typedef enum {
 	FAULT_CODE_NONE = 0,
@@ -129,7 +149,8 @@ typedef enum {
 	SENSOR_PORT_MODE_ABI,
 	SENSOR_PORT_MODE_AS5047_SPI,
 	SENSOR_PORT_MODE_AD2S1205,
-	SENSOR_PORT_MODE_SINCOS
+	SENSOR_PORT_MODE_SINCOS,
+	SENSOR_PORT_MODE_TS5700N8501
 } sensor_port_mode;
 
 typedef struct {
@@ -260,6 +281,8 @@ typedef struct {
 	bool foc_temp_comp;
 	float foc_temp_comp_base_temp;
 	float foc_current_filter_const;
+	mc_foc_cc_decoupling_mode foc_cc_decoupling;
+	mc_foc_observer_type foc_observer_type;
 	// GPDrive
 	int gpd_buffer_notify_left;
 	int gpd_buffer_interpol;
@@ -298,6 +321,8 @@ typedef struct {
 	float m_dc_f_sw;
 	float m_ntc_motor_beta;
 	out_aux_mode m_out_aux_mode;
+	temp_sensor_type m_motor_temp_sens_type;
+	float m_ptc_motor_coeff;
 	// Setup info
 	uint8_t si_motor_poles;
 	float si_gear_ratio;
@@ -687,6 +712,10 @@ typedef enum {
 	COMM_PLOT_SET_GRAPH,
 	COMM_GET_DECODED_BALANCE,
 	COMM_BM_MEM_READ,
+	COMM_WRITE_NEW_APP_DATA_LZO,
+	COMM_WRITE_NEW_APP_DATA_ALL_CAN_LZO,
+	COMM_BM_WRITE_FLASH_LZO,
+	COMM_SET_CURRENT_REL
 } COMM_PACKET_ID;
 
 // CAN commands
