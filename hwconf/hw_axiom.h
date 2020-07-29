@@ -35,6 +35,7 @@
 #define HW_HAS_3_SHUNTS
 #define HW_HAS_PHASE_SHUNTS
 #define HW_HAS_SIN_COS_ENCODER
+#define HW_HAS_GATE_DRIVER_SUPPLY_MONITOR
 
 // Macros
 #define ENABLE_GATE()			palSetPad(GPIOC, 14)
@@ -247,8 +248,6 @@
 // Resolver interface pins
 #define AD2S1205_SAMPLE_GPIO	GPIOB
 #define AD2S1205_SAMPLE_PIN		3
-#define AD2S1205_RDVEL_GPIO		GPIOC
-#define AD2S1205_RDVEL_PIN		12
 
 // NRF pins
 #define NRF_PORT_CSN			GPIOB

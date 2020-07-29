@@ -24,7 +24,7 @@
 #include "hw.h"
 #include "mc_interface.h"
 #include "utils.h"
-#include "math.h"
+#include <math.h>
 
 // Defines
 #define AS5047P_READ_ANGLECOM		(0x3FFF | 0x4000 | 0x8000) // This is just ones
@@ -34,8 +34,7 @@
 #define SINCOS_MIN_AMPLITUDE		1.0			// sqrt(sin^2 + cos^2) has to be larger than this
 #define SINCOS_MAX_AMPLITUDE		1.65		// sqrt(sin^2 + cos^2) has to be smaller than this
 
-
-#if AS5047_USE_HW_SPI_PINS
+#if (AS5047_USE_HW_SPI_PINS || AD2S1205_USE_HW_SPI_PINS)
 #ifdef HW_SPI_DEV
 #define SPI_SW_MISO_GPIO			HW_SPI_PORT_MISO
 #define SPI_SW_MISO_PIN				HW_SPI_PIN_MISO
@@ -83,6 +82,12 @@ static float last_enc_angle = 0.0;
 static uint32_t spi_val = 0;
 static uint32_t spi_error_cnt = 0;
 static float spi_error_rate = 0.0;
+static float resolver_loss_of_tracking_error_rate = 0.0;
+static float resolver_degradation_of_signal_error_rate = 0.0;
+static float resolver_loss_of_signal_error_rate = 0.0;
+static uint32_t resolver_loss_of_tracking_error_cnt = 0;
+static uint32_t resolver_degradation_of_signal_error_cnt = 0;
+static uint32_t resolver_loss_of_signal_error_cnt = 0;
 
 static float sin_gain = 0.0;
 static float sin_offset = 0.0;
@@ -105,13 +110,16 @@ static THD_FUNCTION(ts5700n8501_thread, arg);
 static THD_WORKING_AREA(ts5700n8501_thread_wa, 512);
 static volatile bool ts5700n8501_stop_now = true;
 static volatile bool ts5700n8501_is_running = false;
+static volatile uint8_t ts5700n8501_raw_status[8] = {0};
+static volatile bool ts5700n8501_reset_errors = false;
+static volatile bool ts5700n8501_reset_multiturn = false;
 
 // Private functions
 static void spi_transfer(uint16_t *in_buf, const uint16_t *out_buf, int length);
 static void spi_begin(void);
 static void spi_end(void);
 static void spi_delay(void);
-void TS5700N8501_send_byte(uint8_t b);
+static void TS5700N8501_send_byte(uint8_t b);
 
 uint32_t encoder_spi_get_error_cnt(void) {
 	return spi_error_cnt;
@@ -123,6 +131,30 @@ uint32_t encoder_spi_get_val(void) {
 
 float encoder_spi_get_error_rate(void) {
 	return spi_error_rate;
+}
+
+float encoder_resolver_loss_of_tracking_error_rate(void) {
+	return resolver_loss_of_tracking_error_rate;
+}
+
+float encoder_resolver_degradation_of_signal_error_rate(void) {
+	return resolver_degradation_of_signal_error_rate;
+}
+
+float encoder_resolver_loss_of_signal_error_rate(void) {
+	return resolver_loss_of_signal_error_rate;
+}
+
+uint32_t encoder_resolver_loss_of_tracking_error_cnt(void) {
+	return resolver_loss_of_tracking_error_cnt;
+}
+
+uint32_t encoder_resolver_degradation_of_signal_error_cnt(void) {
+	return resolver_degradation_of_signal_error_cnt;
+}
+
+uint32_t encoder_resolver_loss_of_signal_error_cnt(void) {
+	return resolver_loss_of_signal_error_cnt;
 }
 
 uint32_t encoder_sincos_get_signal_below_min_error_cnt(void) {
@@ -139,6 +171,23 @@ float encoder_sincos_get_signal_below_min_error_rate(void) {
 
 float encoder_sincos_get_signal_above_max_error_rate(void) {
 	return sincos_signal_above_max_error_rate;
+}
+
+uint8_t* encoder_ts5700n8501_get_raw_status(void) {
+	return (uint8_t*)ts5700n8501_raw_status;
+}
+
+int16_t encoder_ts57n8501_get_abm(void) {
+	return (uint16_t)ts5700n8501_raw_status[4] |
+			((uint16_t)ts5700n8501_raw_status[5] << 8);
+}
+
+void encoder_ts57n8501_reset_errors(void) {
+	ts5700n8501_reset_errors = true;
+}
+
+void encoder_ts57n8501_reset_multiturn(void) {
+	ts5700n8501_reset_multiturn = true;
 }
 
 void encoder_deinit(void) {
@@ -229,7 +278,7 @@ void encoder_init_as5047p_spi(void) {
 	palSetPadMode(SPI_SW_CS_GPIO, SPI_SW_CS_PIN, PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
 
 	// Set MOSI to 1
-#if AS5047_USE_HW_SPI_PINS
+#if (AS5047_USE_HW_SPI_PINS || AD2S1205_USE_HW_SPI_PINS)
 	palSetPadMode(SPI_SW_MOSI_GPIO, SPI_SW_MOSI_PIN, PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
 	palSetPad(SPI_SW_MOSI_GPIO, SPI_SW_MOSI_PIN);
 #endif
@@ -261,22 +310,29 @@ void encoder_init_as5047p_spi(void) {
 void encoder_init_ad2s1205_spi(void) {
 	TIM_TimeBaseInitTypeDef  TIM_TimeBaseStructure;
 
+	resolver_loss_of_tracking_error_rate = 0.0;
+	resolver_degradation_of_signal_error_rate = 0.0;
+	resolver_loss_of_signal_error_rate = 0.0;
+	resolver_loss_of_tracking_error_cnt = 0;
+	resolver_loss_of_signal_error_cnt = 0;
+
 	palSetPadMode(SPI_SW_MISO_GPIO, SPI_SW_MISO_PIN, PAL_MODE_INPUT);
 	palSetPadMode(SPI_SW_SCK_GPIO, SPI_SW_SCK_PIN, PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
 	palSetPadMode(SPI_SW_CS_GPIO, SPI_SW_CS_PIN, PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
 
 	// Set MOSI to 1
-#if AS5047_USE_HW_SPI_PINS
+#if (AS5047_USE_HW_SPI_PINS || AD2S1205_USE_HW_SPI_PINS)
 	palSetPadMode(SPI_SW_MOSI_GPIO, SPI_SW_MOSI_PIN, PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
 	palSetPad(SPI_SW_MOSI_GPIO, SPI_SW_MOSI_PIN);
 #endif
 
 	// TODO: Choose pins on comm port when these are not defined
-#if defined(AD2S1205_SAMPLE_GPIO) && defined(AD2S1205_RDVEL_GPIO)
+#if defined(AD2S1205_SAMPLE_GPIO)
 	palSetPadMode(AD2S1205_SAMPLE_GPIO, AD2S1205_SAMPLE_PIN, PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
-	palSetPadMode(AD2S1205_RDVEL_GPIO, AD2S1205_RDVEL_PIN, PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
-
 	palSetPad(AD2S1205_SAMPLE_GPIO, AD2S1205_SAMPLE_PIN);	// Prepare for a falling edge SAMPLE assertion
+#endif
+#if defined(AD2S1205_RDVEL_GPIO)
+	palSetPadMode(AD2S1205_RDVEL_GPIO, AD2S1205_RDVEL_PIN, PAL_MODE_OUTPUT_PUSHPULL | PAL_STM32_OSPEED_HIGHEST);
 	palSetPad(AD2S1205_RDVEL_GPIO, AD2S1205_RDVEL_PIN);		// Will always read position
 #endif
 
@@ -403,6 +459,26 @@ float encoder_read_deg(void) {
 	return angle;
 }
 
+/*
+ * Note: This is not a good solution and needs a proper implementation later...
+ */
+float encoder_read_deg_multiturn(void) {
+	if (mode == ENCODER_MODE_TS5700N8501) {
+		encoder_ts57n8501_get_abm();
+		float ts_mt = (float)encoder_ts57n8501_get_abm();
+		if (fabsf(ts_mt) > 5000.0) {
+			ts_mt = 0;
+			encoder_ts57n8501_reset_multiturn();
+		}
+
+		ts_mt += 5000;
+
+		return encoder_read_deg() / 10000.0 + (360 * ts_mt) / 10000.0;
+	} else {
+		return encoder_read_deg();
+	}
+}
+
 /**
  * Reset the encoder counter. Should be called from the index interrupt.
  */
@@ -459,7 +535,7 @@ void encoder_tim_isr(void) {
 		spi_end();
 
 		spi_val = pos;
-		if(spi_check_parity(pos) && pos != 0xffff) {  // all ones = disconnect
+		if(spi_check_parity(pos)) {
 			pos &= 0x3FFF;
 			last_enc_angle = ((float)pos * 360.0) / 16384.0;
 			UTILS_LP_FAST(spi_error_rate, 0.0, 1./AS5047_SAMPLE_RATE_HZ);
@@ -475,22 +551,70 @@ void encoder_tim_isr(void) {
 		palSetPad(AD2S1205_RDVEL_GPIO, AD2S1205_RDVEL_PIN);	// Always read position
 #endif
 
+		palSetPad(SPI_SW_SCK_GPIO, SPI_SW_SCK_PIN);
+		spi_delay();
 		spi_begin(); // CS uses the same mcu pin as AS5047
+		spi_delay();
 
 		spi_transfer(&pos, 0, 1);
 		spi_end();
 
-		uint16_t RDVEL = pos & 0x08; // 1 means a position read
-		uint16_t DOS = pos & 0x04;
-		uint16_t LOT = pos & 0x02;
-	//	uint16_t parity = pos & 0x01; // 16 bit frame should have odd parity
+		spi_val = pos;
 
-		pos &= 0xFFF0;
-		pos = pos >> 4;
-		pos &= 0x0FFF; // check if needed
+		uint16_t RDVEL = pos & 0x0008; // 1 means a position read
 
-		if((RDVEL != 0) && (DOS != 0) && (LOT != 0)) {
-			last_enc_angle = ((float)pos * 360.0) / 4096.0;
+		if((RDVEL != 0)){
+
+			bool DOS = ((pos & 0x04) == 0);
+			bool LOT = ((pos & 0x02) == 0);
+			bool LOS = DOS && LOT;
+			bool parity_error = spi_check_parity(pos);	//16 bit frame has odd parity
+			bool angle_is_correct = true;
+
+			if(LOS) {
+				LOT = DOS = 0;
+			}
+
+			if(!parity_error) {
+				UTILS_LP_FAST(spi_error_rate, 0.0, 1./AD2S1205_SAMPLE_RATE_HZ);
+			} else {
+				angle_is_correct = false;
+				++spi_error_cnt;
+				UTILS_LP_FAST(spi_error_rate, 1.0, 1./AD2S1205_SAMPLE_RATE_HZ);
+			}
+
+			pos &= 0xFFF0;
+			pos = pos >> 4;
+			pos &= 0x0FFF;
+
+			if(LOT) {
+				angle_is_correct = false;
+				++resolver_loss_of_tracking_error_cnt;
+				UTILS_LP_FAST(resolver_loss_of_tracking_error_rate, 1.0, 1./AD2S1205_SAMPLE_RATE_HZ);
+			} else {
+				UTILS_LP_FAST(resolver_loss_of_tracking_error_rate, 0.0, 1./AD2S1205_SAMPLE_RATE_HZ);
+			}
+
+			if(DOS) {
+				angle_is_correct = false;
+				++resolver_degradation_of_signal_error_cnt;
+				UTILS_LP_FAST(resolver_degradation_of_signal_error_rate, 1.0, 1./AD2S1205_SAMPLE_RATE_HZ);
+			} else {
+				UTILS_LP_FAST(resolver_degradation_of_signal_error_rate, 0.0, 1./AD2S1205_SAMPLE_RATE_HZ);
+			}
+
+			if(LOS) {
+				angle_is_correct = false;
+				++resolver_loss_of_signal_error_cnt;
+				UTILS_LP_FAST(resolver_loss_of_signal_error_rate, 1.0, 1./AD2S1205_SAMPLE_RATE_HZ);
+			} else {
+				UTILS_LP_FAST(resolver_loss_of_signal_error_rate, 0.0, 1./AD2S1205_SAMPLE_RATE_HZ);
+			}
+
+			if(angle_is_correct)
+			{
+				last_enc_angle = ((float)pos * 360.0) / 4096.0;
+			}
 		}
 	}
 }
@@ -592,7 +716,7 @@ void TS5700N8501_delay_uart(void) {
  * the system is locked, but it should finish fast enough to not cause problems for other
  * things due to the high baud rate.
  */
-void TS5700N8501_send_byte(uint8_t b) {
+static void TS5700N8501_send_byte(uint8_t b) {
 	utils_sys_lock_cnt();
 #ifdef HW_ADC_EXT_GPIO
 	palSetPad(HW_ADC_EXT_GPIO, HW_ADC_EXT_PIN);
@@ -650,11 +774,29 @@ static THD_FUNCTION(ts5700n8501_thread, arg) {
 			return;
 		}
 
-		TS5700N8501_send_byte(0b01000000);
+		if (ts5700n8501_reset_errors) {
+			for (int i = 0;i < 20;i++) {
+				TS5700N8501_send_byte(0b01011101);
+				chThdSleep(2);
+			}
 
-		chThdSleep(1);
+			ts5700n8501_reset_errors = false;
+		}
 
-		uint8_t reply[6];
+		if (ts5700n8501_reset_multiturn) {
+			for (int i = 0;i < 20;i++) {
+				TS5700N8501_send_byte(0b01000110);
+				chThdSleep(2);
+			}
+
+			ts5700n8501_reset_multiturn = false;
+		}
+
+		TS5700N8501_send_byte(0b01011000);
+
+		chThdSleep(2);
+
+		uint8_t reply[11];
 		int reply_ind = 0;
 
 		msg_t res = sdGetTimeout(&HW_UART_DEV, TIME_IMMEDIATE);
@@ -670,11 +812,20 @@ static THD_FUNCTION(ts5700n8501_thread, arg) {
 			crc = (reply[i] ^ crc);
 		}
 
-		if (reply_ind == 6 && crc == reply[reply_ind - 1]) {
+		if (reply_ind == 11 && crc == reply[reply_ind - 1]) {
 			uint32_t pos = (uint32_t)reply[2] + ((uint32_t)reply[3] << 8) + ((uint32_t)reply[4] << 16);
 			spi_val = pos;
 			last_enc_angle = (float)pos / 131072.0 * 360.0;
 			UTILS_LP_FAST(spi_error_rate, 0.0, 1.0 / AS5047_SAMPLE_RATE_HZ);
+
+			ts5700n8501_raw_status[0] = reply[1]; // SF
+			ts5700n8501_raw_status[1] = reply[2]; // ABS0
+			ts5700n8501_raw_status[2] = reply[3]; // ABS1
+			ts5700n8501_raw_status[3] = reply[4]; // ABS2
+			ts5700n8501_raw_status[4] = reply[6]; // ABM0
+			ts5700n8501_raw_status[5] = reply[7]; // ABM1
+			ts5700n8501_raw_status[6] = reply[8]; // ABM2
+			ts5700n8501_raw_status[7] = reply[9]; // ALMC
 		} else {
 			++spi_error_cnt;
 			UTILS_LP_FAST(spi_error_rate, 1.0, 1.0 / AS5047_SAMPLE_RATE_HZ);
