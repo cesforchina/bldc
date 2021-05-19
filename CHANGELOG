@@ -1,4 +1,4 @@
-=== FW 5.02 <dev> ===
+=== FW 5.02 ===
 * IMU calibration improvement.
 * Added COMM_GET_MCCONF_TEMP command.
 * Added bidirectional current command to VESC remote.
@@ -13,6 +13,21 @@
 * Added bm support for STM32F30x and STM32L47x.
 * App Balance updates. See https://github.com/vedderb/bldc/pull/193
 * Motor current now based on magnitude of both axes.
+* Initial VESC BMS support.
+* Hall sensor interpolation improvement.
+* Made hall sensor filter configurable.
+* Added locking time and ramp up time parameters to sensorless startup.
+* Removed D axis current injection.
+* Initial VESC IO-board support.
+* Added hall sensor interpolation ERPM config option.
+* Use fast speed estimator for RPM limit.
+* Avoid accumulated rounding error when using PID position angle division.
+* Added UAVCAN raw throttle drive mode (current or duty cycle control).
+* Added MT6816 encoder support. See https://github.com/vedderb/bldc/pull/238
+* Added modulation-based D axis current controller gain scaling. Addresses https://github.com/vedderb/bldc/pull/220
+* Added PAS app. See: https://github.com/vedderb/bldc/pull/243
+* Added 100k CAN-baudrate.
+* Added 100k NTC temperature sensor support.
 
 === FW 5.01 ===
 * Fixed PPM bug in previous release.
