@@ -22,7 +22,7 @@
 
 // Default settings
 #ifndef MCCONF_DEFAULT_MOTOR_TYPE
-#define MCCONF_DEFAULT_MOTOR_TYPE		MOTOR_TYPE_BLDC
+#define MCCONF_DEFAULT_MOTOR_TYPE		MOTOR_TYPE_FOC
 #endif
 #ifndef MCCONF_PWM_MODE
 #define MCCONF_PWM_MODE					PWM_MODE_SYNCHRONOUS // Default PWM mode
@@ -137,7 +137,7 @@
 #define MCCONF_S_PID_ALLOW_BRAKING		true	// Allow braking in speed control mode
 #endif
 #ifndef MCCONF_S_PID_RAMP_ERPMS_S
-#define MCCONF_S_PID_RAMP_ERPMS_S		-1.0	// Default Speed Input Ramp
+#define MCCONF_S_PID_RAMP_ERPMS_S		25000.0	// Speed input ramping, in ERPM/s
 #endif
 
 // Position PID parameters
@@ -155,6 +155,9 @@
 #endif
 #ifndef MCCONF_P_PID_ANG_DIV
 #define MCCONF_P_PID_ANG_DIV			1.0		// Divide angle by this value
+#endif
+#ifndef MCCONF_P_PID_GAIN_DEC_ANGLE
+#define MCCONF_P_PID_GAIN_DEC_ANGLE		0.0		// Decrease PID-gains when the error is below this value
 #endif
 
 // Current control parameters
@@ -351,7 +354,7 @@
 #define MCCONF_FOC_CURRENT_FILTER_CONST	0.1		// Filter constant for the filtered currents
 #endif
 #ifndef MCCONF_FOC_CC_DECOUPLING
-#define MCCONF_FOC_CC_DECOUPLING		FOC_CC_DECOUPLING_BEMF // Current controller decoupling
+#define MCCONF_FOC_CC_DECOUPLING		FOC_CC_DECOUPLING_DISABLED // Current controller decoupling
 #endif
 #ifndef MCCONF_FOC_OBSERVER_TYPE
 #define MCCONF_FOC_OBSERVER_TYPE		FOC_OBSERVER_ORTEGA_ORIGINAL // Position observer type for FOC
@@ -369,13 +372,61 @@
 #define MCCONF_FOC_SL_ERPM_HFI			2000.0	// ERPM above which only the observer is used
 #endif
 #ifndef MCCONF_FOC_HFI_START_SAMPLES
-#define MCCONF_FOC_HFI_START_SAMPLES	65 // Sample this often at start to resolve ambiguity
+#define MCCONF_FOC_HFI_START_SAMPLES	15 // Sample this often at start to resolve ambiguity
 #endif
 #ifndef MCCONF_FOC_HFI_OBS_OVR_SEC
 #define MCCONF_FOC_HFI_OBS_OVR_SEC		0.001 // Continue using observer for this long when entering HFI speed
 #endif
 #ifndef MCCONF_FOC_HFI_SAMPLES
 #define MCCONF_FOC_HFI_SAMPLES			HFI_SAMPLES_16 // Samples per motor revolution for HFI
+#endif
+#ifndef MCCONF_FOC_OFFSETS_CAL_ON_BOOT
+#define MCCONF_FOC_OFFSETS_CAL_ON_BOOT	true // Measure offsets every boot
+#endif
+#ifndef MCCONF_FOC_OFFSETS_CURRENT_0
+#define MCCONF_FOC_OFFSETS_CURRENT_0	2048.0 // Current 0 offset
+#endif
+#ifndef MCCONF_FOC_OFFSETS_CURRENT_1
+#define MCCONF_FOC_OFFSETS_CURRENT_1	2048.0 // Current 1 offset
+#endif
+#ifndef MCCONF_FOC_OFFSETS_CURRENT_2
+#define MCCONF_FOC_OFFSETS_CURRENT_2	2048.0 // Current 2 offset
+#endif
+#ifndef MCCONF_FOC_OFFSETS_VOLTAGE_0
+#define MCCONF_FOC_OFFSETS_VOLTAGE_0	0.0 // Voltage 0 offset
+#endif
+#ifndef MCCONF_FOC_OFFSETS_VOLTAGE_1
+#define MCCONF_FOC_OFFSETS_VOLTAGE_1	0.0 // Voltage 1 offset
+#endif
+#ifndef MCCONF_FOC_OFFSETS_VOLTAGE_2
+#define MCCONF_FOC_OFFSETS_VOLTAGE_2	0.0 // Voltage 2 offset
+#endif
+#ifndef MCCONF_FOC_OFFSETS_VOLTAGE_UNDRIVEN_0
+#define MCCONF_FOC_OFFSETS_VOLTAGE_UNDRIVEN_0	0.0 // Voltage undriven 0 offset
+#endif
+#ifndef MCCONF_FOC_OFFSETS_VOLTAGE_UNDRIVEN_1
+#define MCCONF_FOC_OFFSETS_VOLTAGE_UNDRIVEN_1	0.0 // Voltage undriven 1 offset
+#endif
+#ifndef MCCONF_FOC_OFFSETS_VOLTAGE_UNDRIVEN_2
+#define MCCONF_FOC_OFFSETS_VOLTAGE_UNDRIVEN_2	0.0 // Voltage undriven 2 offset
+#endif
+#ifndef MCCONF_FOC_PHASE_FILTER_ENABLE
+#define MCCONF_FOC_PHASE_FILTER_ENABLE	true // Use phase voltage filters when available
+#endif
+#ifndef MCCONF_FOC_PHASE_FILTER_MAX_ERPM
+#define MCCONF_FOC_PHASE_FILTER_MAX_ERPM	4000.0 // Use phase filter up to this ERPM
+#endif
+#ifndef MCCONF_FOC_FW_CURRENT_MAX
+#define MCCONF_FOC_FW_CURRENT_MAX		0.0 // Maximum field weakening current
+#endif
+#ifndef MCCONF_FOC_FW_DUTY_START
+#define MCCONF_FOC_FW_DUTY_START		0.9 // Start field weakening at this fraction of max duty cycle
+#endif
+#ifndef MCCONF_FOC_FW_RAMP_TIME
+#define MCCONF_FOC_FW_RAMP_TIME			0.2 // Ramp time for field weakening current
+#endif
+#ifndef MCCONF_FOC_FW_Q_CURRENT_FACTOR
+#define MCCONF_FOC_FW_Q_CURRENT_FACTOR	0.02 // Factor of the FW-current to feed to the Q-axis to slow motor down when setting 0 current
 #endif
 
 // GPD
@@ -495,6 +546,9 @@
 #endif
 #ifndef MCCONF_BMS_SOC_LIMIT_END
 #define MCCONF_BMS_SOC_LIMIT_END		0
+#endif
+#ifndef MCCONF_BMS_FWD_CAN_MODE
+#define MCCONF_BMS_FWD_CAN_MODE			BMS_FWD_CAN_MODE_DISABLED
 #endif
 
 #endif /* MCCONF_DEFAULT_H_ */
