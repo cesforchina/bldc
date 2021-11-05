@@ -111,6 +111,7 @@ __attribute__((section(".ram4"))) static volatile int8_t m_phase_samples[ADC_SAM
 
 static volatile int m_sample_len;
 static volatile int m_sample_int;
+static volatile bool m_sample_raw;
 static volatile debug_sampling_mode m_sample_mode;
 static volatile debug_sampling_mode m_sample_mode_last;
 static volatile int m_sample_now;
@@ -158,6 +159,7 @@ void mc_interface_init(void) {
 	m_sample_len = 1000;
 	m_sample_int = 1;
 	m_sample_now = 0;
+	m_sample_raw = false;
 	m_sample_trigger = 0;
 	m_sample_mode = DEBUG_SAMPLING_OFF;
 	m_sample_mode_last = DEBUG_SAMPLING_OFF;
@@ -336,6 +338,10 @@ void mc_interface_set_configuration(mc_configuration *configuration) {
 
 		case SENSOR_PORT_MODE_AS5047_SPI:
 			encoder_init_as5047p_spi();
+			break;
+
+		case SENSOR_PORT_MODE_MT6816_SPI:
+			encoder_init_mt6816_spi();
 			break;
 
 		case SENSOR_PORT_MODE_AD2S1205:
@@ -545,8 +551,14 @@ const char* mc_interface_fault_to_string(mc_fault_code fault) {
     case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3: return "FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3";
     case FAULT_CODE_UNBALANCED_CURRENTS: return "FAULT_CODE_UNBALANCED_CURRENTS";
     case FAULT_CODE_BRK: return "FAULT_CODE_BRK";
-	default: return "FAULT_UNKNOWN"; break;
+    case FAULT_CODE_RESOLVER_LOT: return "FAULT_CODE_RESOLVER_LOT";
+    case FAULT_CODE_RESOLVER_DOS: return "FAULT_CODE_RESOLVER_DOS";
+    case FAULT_CODE_RESOLVER_LOS: return "FAULT_CODE_RESOLVER_LOS";
+    case FAULT_CODE_ENCODER_NO_MAGNET: return "FAULT_CODE_ENCODER_NO_MAGNET";
+    case FAULT_CODE_ENCODER_MAGNET_TOO_STRONG: return "FAULT_CODE_ENCODER_MAGNET_TOO_STRONG";
 	}
+
+	return "Unknown fault";
 }
 
 mc_state mc_interface_get_state(void) {
@@ -655,6 +667,7 @@ void mc_interface_set_pid_pos(float pos) {
 
 	motor_now()->m_position_set = pos;
 
+	pos += motor_now()->m_conf.p_pid_offset;
 	pos *= DIR_MULT;
 	utils_norm_angle(&pos);
 
@@ -1359,16 +1372,36 @@ float mc_interface_get_pid_pos_now(void) {
 	}
 
 	ret *= DIR_MULT;
+	ret -= motor_now()->m_conf.p_pid_offset;
 	utils_norm_angle(&ret);
 
 	return ret;
+}
+
+/**
+ * Update the offset such that the current angle becomes angle_now
+ */
+void mc_interface_update_pid_pos_offset(float angle_now, bool store) {
+	mc_configuration *mcconf = mempools_alloc_mcconf();
+	*mcconf = *mc_interface_get_configuration();
+
+	mcconf->p_pid_offset += mc_interface_get_pid_pos_now() - angle_now;
+	utils_norm_angle(&mcconf->p_pid_offset);
+
+	if (store) {
+		conf_general_store_mc_configuration(mcconf, mc_interface_get_motor_thread() == 2);
+	}
+
+	mc_interface_set_configuration(mcconf);
+
+	mempools_free_mcconf(mcconf);
 }
 
 float mc_interface_get_last_sample_adc_isr_duration(void) {
 	return m_last_adc_duration_sample;
 }
 
-void mc_interface_sample_print_data(debug_sampling_mode mode, uint16_t len, uint8_t decimation) {
+void mc_interface_sample_print_data(debug_sampling_mode mode, uint16_t len, uint8_t decimation, bool raw) {
 	if (len > ADC_SAMPLE_MAX_LEN) {
 		len = ADC_SAMPLE_MAX_LEN;
 	}
@@ -1381,6 +1414,7 @@ void mc_interface_sample_print_data(debug_sampling_mode mode, uint16_t len, uint
 		m_sample_len = len;
 		m_sample_int = decimation;
 		m_sample_mode = mode;
+		m_sample_raw = raw;
 #ifdef HW_HAS_DUAL_MOTORS
 		m_sample_is_second_motor = motor_now() == &m_motor_2;
 #endif
@@ -2302,6 +2336,9 @@ static void run_timer_tasks(volatile motor_if_state_t *motor) {
 
 	// Update auxiliary output
 	switch (motor->m_conf.m_out_aux_mode) {
+	case OUT_AUX_MODE_UNUSED:
+		break;
+
 	case OUT_AUX_MODE_OFF:
 		AUX_OFF();
 		break;
@@ -2340,7 +2377,30 @@ static void run_timer_tasks(volatile motor_if_state_t *motor) {
 		}
 		break;
 
-	default:
+	case OUT_AUX_MODE_MOTOR_50:
+		if (mc_interface_temp_motor_filtered() > 50.0) {AUX_ON();} else {AUX_OFF();}
+		break;
+
+	case OUT_AUX_MODE_MOSFET_50:
+		if (mc_interface_temp_fet_filtered() > 50.0) {AUX_ON();} else {AUX_OFF();}
+		break;
+
+	case OUT_AUX_MODE_MOTOR_70:
+		if (mc_interface_temp_motor_filtered() > 70.0) {AUX_ON();} else {AUX_OFF();}
+		break;
+
+	case OUT_AUX_MODE_MOSFET_70:
+		if (mc_interface_temp_fet_filtered() > 70.0) {AUX_ON();} else {AUX_OFF();}
+		break;
+
+	case OUT_AUX_MODE_MOTOR_MOSFET_50:
+		if (mc_interface_temp_motor_filtered() > 50.0 ||
+				mc_interface_temp_fet_filtered() > 50.0) {AUX_ON();} else {AUX_OFF();}
+		break;
+
+	case OUT_AUX_MODE_MOTOR_MOSFET_70:
+		if (mc_interface_temp_motor_filtered() > 70.0 ||
+				mc_interface_temp_fet_filtered() > 70.0) {AUX_ON();} else {AUX_OFF();}
 		break;
 	}
 
@@ -2368,6 +2428,20 @@ static void run_timer_tasks(volatile motor_if_state_t *motor) {
 			mc_interface_fault_stop(FAULT_CODE_ENCODER_SINCOS_BELOW_MIN_AMPLITUDE, !is_motor_1, false);
 		if (encoder_sincos_get_signal_above_max_error_rate() > 0.05)
 			mc_interface_fault_stop(FAULT_CODE_ENCODER_SINCOS_ABOVE_MAX_AMPLITUDE, !is_motor_1, false);
+	}
+
+	if (motor->m_conf.motor_type == MOTOR_TYPE_FOC &&
+				motor->m_conf.foc_sensor_mode == FOC_SENSOR_MODE_ENCODER &&
+				motor->m_conf.m_sensor_port_mode == SENSOR_PORT_MODE_AS5047_SPI) {
+		if (!encoder_AS504x_get_diag().is_connected) {
+			mc_interface_fault_stop(FAULT_CODE_ENCODER_SPI, !is_motor_1, false);
+		}
+
+		if (encoder_AS504x_get_diag().is_Comp_high) {
+			mc_interface_fault_stop(FAULT_CODE_ENCODER_NO_MAGNET, !is_motor_1, false);
+		} else if(encoder_AS504x_get_diag().is_Comp_low) {
+			mc_interface_fault_stop(FAULT_CODE_ENCODER_MAGNET_TOO_STRONG, !is_motor_1, false);
+		}
 	}
 
 	if(motor->m_conf.motor_type == MOTOR_TYPE_FOC &&
@@ -2416,7 +2490,7 @@ static void run_timer_tasks(volatile motor_if_state_t *motor) {
 	if (!motor->m_conf.foc_sample_high_current) { // This won't work when high current sampling is used
 		motor->m_motor_current_unbalance = mc_interface_get_abs_motor_current_unbalance();
 
-		if (motor->m_motor_current_unbalance > MCCONF_MAX_CURRENT_UNBALANCE) {
+		if (fabsf(motor->m_motor_current_unbalance) > fabsf(MCCONF_MAX_CURRENT_UNBALANCE)) {
 			UTILS_LP_FAST(motor->m_motor_current_unbalance_error_rate, 1.0, (1 / 1000.0));
 		} else {
 			UTILS_LP_FAST(motor->m_motor_current_unbalance_error_rate, 0.0, (1 / 1000.0));
@@ -2492,13 +2566,25 @@ static THD_FUNCTION(sample_send_thread, arg) {
 			}
 
 			buffer[index++] = COMM_SAMPLE_PRINT;
-			buffer_append_float32_auto(buffer, (float)m_curr0_samples[ind_samp] * FAC_CURRENT, &index);
-			buffer_append_float32_auto(buffer, (float)m_curr1_samples[ind_samp] * FAC_CURRENT, &index);
-			buffer_append_float32_auto(buffer, ((float)m_ph1_samples[ind_samp] / 4096.0 * V_REG) * ((VIN_R1 + VIN_R2) / VIN_R2) * ADC_VOLTS_PH_FACTOR, &index);
-			buffer_append_float32_auto(buffer, ((float)m_ph2_samples[ind_samp] / 4096.0 * V_REG) * ((VIN_R1 + VIN_R2) / VIN_R2) * ADC_VOLTS_PH_FACTOR, &index);
-			buffer_append_float32_auto(buffer, ((float)m_ph3_samples[ind_samp] / 4096.0 * V_REG) * ((VIN_R1 + VIN_R2) / VIN_R2) * ADC_VOLTS_PH_FACTOR, &index);
-			buffer_append_float32_auto(buffer, ((float)m_vzero_samples[ind_samp] / 4096.0 * V_REG) * ((VIN_R1 + VIN_R2) / VIN_R2) * ADC_VOLTS_INPUT_FACTOR, &index);
-			buffer_append_float32_auto(buffer, (float)m_curr_fir_samples[ind_samp] / (8.0 / FAC_CURRENT), &index);
+
+			if (m_sample_raw) {
+				buffer_append_float32_auto(buffer, (float)m_curr0_samples[ind_samp], &index);
+				buffer_append_float32_auto(buffer, (float)m_curr1_samples[ind_samp], &index);
+				buffer_append_float32_auto(buffer, (float)m_ph1_samples[ind_samp], &index);
+				buffer_append_float32_auto(buffer, (float)m_ph2_samples[ind_samp], &index);
+				buffer_append_float32_auto(buffer, (float)m_ph3_samples[ind_samp], &index);
+				buffer_append_float32_auto(buffer, (float)m_vzero_samples[ind_samp], &index);
+				buffer_append_float32_auto(buffer, (float)m_curr_fir_samples[ind_samp], &index);
+			} else {
+				buffer_append_float32_auto(buffer, (float)m_curr0_samples[ind_samp] * FAC_CURRENT, &index);
+				buffer_append_float32_auto(buffer, (float)m_curr1_samples[ind_samp] * FAC_CURRENT, &index);
+				buffer_append_float32_auto(buffer, ((float)m_ph1_samples[ind_samp] / 4096.0 * V_REG) * ((VIN_R1 + VIN_R2) / VIN_R2) * ADC_VOLTS_PH_FACTOR, &index);
+				buffer_append_float32_auto(buffer, ((float)m_ph2_samples[ind_samp] / 4096.0 * V_REG) * ((VIN_R1 + VIN_R2) / VIN_R2) * ADC_VOLTS_PH_FACTOR, &index);
+				buffer_append_float32_auto(buffer, ((float)m_ph3_samples[ind_samp] / 4096.0 * V_REG) * ((VIN_R1 + VIN_R2) / VIN_R2) * ADC_VOLTS_PH_FACTOR, &index);
+				buffer_append_float32_auto(buffer, ((float)m_vzero_samples[ind_samp] / 4096.0 * V_REG) * ((VIN_R1 + VIN_R2) / VIN_R2) * ADC_VOLTS_INPUT_FACTOR, &index);
+				buffer_append_float32_auto(buffer, (float)m_curr_fir_samples[ind_samp] / (8.0 / FAC_CURRENT), &index);
+			}
+
 			buffer_append_float32_auto(buffer, (float)m_f_sw_samples[ind_samp] * 10.0, &index);
 			buffer[index++] = m_status_samples[ind_samp];
 			buffer[index++] = m_phase_samples[ind_samp];

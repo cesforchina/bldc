@@ -72,7 +72,7 @@
 #define MCCONF_L_RPM_START				0.8		// Fraction of full speed where RPM current limiting starts
 #endif
 #ifndef MCCONF_L_SLOW_ABS_OVERCURRENT
-#define MCCONF_L_SLOW_ABS_OVERCURRENT	true	// Use the filtered (and hence slower) current for the overcurrent fault detection
+#define MCCONF_L_SLOW_ABS_OVERCURRENT	false	// Use the filtered (and hence slower) current for the overcurrent fault detection
 #endif
 #ifndef MCCONF_L_MIN_DUTY
 #define MCCONF_L_MIN_DUTY				0.005	// Minimum duty cycle
@@ -117,6 +117,11 @@
 #define MCCONF_L_DUTY_START				1.0 // Start limiting current at this duty cycle
 #endif
 
+// Common PID-parameters
+#ifndef MCCONF_SP_PID_LOOP_RATE
+#define MCCONF_SP_PID_LOOP_RATE			PID_RATE_1000_HZ // PID loop rate
+#endif
+
 // Speed PID parameters
 #ifndef MCCONF_S_PID_KP
 #define MCCONF_S_PID_KP					0.004	// Proportional gain
@@ -142,13 +147,16 @@
 
 // Position PID parameters
 #ifndef MCCONF_P_PID_KP
-#define MCCONF_P_PID_KP					0.03	// Proportional gain
+#define MCCONF_P_PID_KP					0.025	// Proportional gain
 #endif
 #ifndef MCCONF_P_PID_KI
 #define MCCONF_P_PID_KI					0.0		// Integral gain
 #endif
 #ifndef MCCONF_P_PID_KD
-#define MCCONF_P_PID_KD					0.0004	// Derivative gain
+#define MCCONF_P_PID_KD					0.00000	// Derivative gain
+#endif
+#ifndef MCCONF_P_PID_KD_PROC
+#define MCCONF_P_PID_KD_PROC			0.00035	// Derivative gain process
 #endif
 #ifndef MCCONF_P_PID_KD_FILTER
 #define MCCONF_P_PID_KD_FILTER			0.2		// Derivative filter
@@ -158,6 +166,9 @@
 #endif
 #ifndef MCCONF_P_PID_GAIN_DEC_ANGLE
 #define MCCONF_P_PID_GAIN_DEC_ANGLE		0.0		// Decrease PID-gains when the error is below this value
+#endif
+#ifndef MCCONF_P_PID_OFFSET
+#define MCCONF_P_PID_OFFSET				0.0		// Angle offset
 #endif
 
 // Current control parameters
@@ -415,6 +426,9 @@
 #endif
 #ifndef MCCONF_FOC_PHASE_FILTER_MAX_ERPM
 #define MCCONF_FOC_PHASE_FILTER_MAX_ERPM	4000.0 // Use phase filter up to this ERPM
+#endif
+#ifndef MCCONF_FOC_MTPA_MODE
+#define MCCONF_FOC_MTPA_MODE				MTPA_MODE_OFF // Maximum torque per amp (MTPA) algorithm mode
 #endif
 #ifndef MCCONF_FOC_FW_CURRENT_MAX
 #define MCCONF_FOC_FW_CURRENT_MAX		0.0 // Maximum field weakening current

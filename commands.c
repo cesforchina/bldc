@@ -194,6 +194,10 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		reply_func = commands_send_packet;
 	}
 
+	if (!send_func_can_fwd) {
+		send_func_can_fwd = reply_func;
+	}
+
 	switch (packet_id) {
 	case COMM_FW_VERSION: {
 		int32_t ind = 0;
@@ -617,7 +621,13 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		mode = data[ind++];
 		sample_len = buffer_get_uint16(data, &ind);
 		decimation = data[ind++];
-		mc_interface_sample_print_data(mode, sample_len, decimation);
+
+		bool raw = false;
+		if (len > (uint32_t)ind) {
+			raw = data[ind++];
+		}
+
+		mc_interface_sample_print_data(mode, sample_len, decimation, raw);
 	} break;
 
 	case COMM_REBOOT:
@@ -1500,6 +1510,7 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 	case COMM_BM_MAP_PINS_NRF5X:
 	case COMM_BM_MEM_READ:
 	case COMM_GET_IMU_CALIBRATION:
+	case COMM_BM_MEM_WRITE:
 		if (!is_blocking) {
 			memcpy(blocking_thread_cmd_buffer, data - 1, len + 1);
 			blocking_thread_cmd_len = len + 1;
@@ -2191,6 +2202,20 @@ static THD_FUNCTION(blocking_thread, arg) {
 			buffer_append_int16(send_buffer, res, &ind);
 			if (send_func_blocking) {
 				send_func_blocking(send_buffer, ind + read_len);
+			}
+		} break;
+
+		case COMM_BM_MEM_WRITE: {
+			int32_t ind = 0;
+			uint32_t addr = buffer_get_uint32(data, &ind);
+
+			int res = bm_mem_write(addr, data + ind, len - ind);
+
+			ind = 0;
+			send_buffer[ind++] = packet_id;
+			buffer_append_int16(send_buffer, res, &ind);
+			if (send_func_blocking) {
+				send_func_blocking(send_buffer, ind);
 			}
 		} break;
 #endif

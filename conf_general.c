@@ -873,7 +873,7 @@ bool conf_general_measure_flux_linkage(float current, float duty,
 	avg_current /= samples;
 	avg_voltage -= avg_current * res * 2.0;
 
-	*linkage = avg_voltage * 60.0 / (sqrtf(3.0) * 2.0 * M_PI * avg_rpm);
+	*linkage = avg_voltage / (sqrtf(3.0) * RPM2RADPS_f(avg_rpm));
 
 	mempools_free_mcconf(mcconf);
 	mempools_free_mcconf(mcconf_old);
@@ -1065,10 +1065,10 @@ bool conf_general_measure_flux_linkage_openloop(float current, float duty,
 		iq_avg /= samples2;
 		id_avg /= samples2;
 
-		float rad_s = rpm_now * ((2.0 * M_PI) / 60.0);
+		float rad_s = RPM2RADPS_f(rpm_now);
 		float v_mag = sqrtf(SQ(vq_avg) + SQ(vd_avg));
 		float i_mag = sqrtf(SQ(iq_avg) + SQ(id_avg));
-		*linkage = (v_mag - (2.0 / 3.0) * res * i_mag) / rad_s - (2.0 / 3.0) * i_mag * ind;
+		*linkage = (v_mag - res * i_mag) / rad_s - i_mag * ind;
 
 		mcconf->foc_motor_r = res;
 		mcconf->foc_motor_l = ind;
@@ -1081,13 +1081,22 @@ bool conf_general_measure_flux_linkage_openloop(float current, float duty,
 
 		float linkage_sum = 0.0;
 		float linkage_samples = 0.0;
-		for (int i = 0;i < 20000;i++) {
-			float rad_s_now = mcpwm_foc_get_rpm_faster() * ((2.0 * M_PI) / 60.0);
-			if (fabsf(mcpwm_foc_get_duty_cycle_now()) < 0.01) {
+		for (int i = 0;i < 2000;i++) {
+			float rad_s_now = RPM2RADPS_f(mcpwm_foc_get_rpm_faster());
+			if (fabsf(mcpwm_foc_get_duty_cycle_now()) < 0.02) {
 				break;
 			}
 
 			linkage_sum += mcpwm_foc_get_vq() / rad_s_now;
+
+			// Optionally use magnitude
+//			linkage_sum += sqrtf(SQ(mcpwm_foc_get_vq()) + SQ(mcpwm_foc_get_vd())) / rad_s_now;
+
+			// Optionally use magnitude of observer state
+//			float x1, x2;
+//			mcpwm_foc_get_observer_state(&x1, &x2);
+//			linkage_sum += sqrtf(SQ(x1) + SQ(x2));
+
 			linkage_samples += 1.0;
 			chThdSleep(1);
 		}
@@ -1308,7 +1317,7 @@ static bool measure_r_l_imax(float current_min, float current_max,
 			return false;
 		}
 
-		if ((i * i * res_tmp) >= (max_power_loss / 3.0)) {
+		if ((i * i * res_tmp * 1.5) >= (max_power_loss / 5.0)) {
 			break;
 		}
 	}
@@ -1319,7 +1328,7 @@ static bool measure_r_l_imax(float current_min, float current_max,
 	mc_interface_set_configuration(mcconf);
 
 	*l = mcpwm_foc_measure_inductance_current(i_last, 100, 0, 0) * 1e-6;
-	*i_max = sqrtf(max_power_loss / *r);
+	*i_max = sqrtf(max_power_loss / *r / 1.5);
 	utils_truncate_number(i_max, HW_LIM_CURRENT);
 
 	mcconf->foc_motor_r = res_old;

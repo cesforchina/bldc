@@ -124,6 +124,7 @@ int32_t confgenerator_serialize_mcconf(uint8_t *buffer, const mc_configuration *
 	buffer_append_float16(buffer, conf->foc_offsets_voltage_undriven[2], 10000, &ind);
 	buffer[ind++] = conf->foc_phase_filter_enable;
 	buffer_append_float32_auto(buffer, conf->foc_phase_filter_max_erpm, &ind);
+	buffer[ind++] = conf->foc_mtpa_mode;
 	buffer_append_float32_auto(buffer, conf->foc_fw_current_max, &ind);
 	buffer_append_float16(buffer, conf->foc_fw_duty_start, 10000, &ind);
 	buffer_append_float16(buffer, conf->foc_fw_ramp_time, 1000, &ind);
@@ -133,6 +134,7 @@ int32_t confgenerator_serialize_mcconf(uint8_t *buffer, const mc_configuration *
 	buffer_append_float16(buffer, conf->gpd_current_filter_const, 10000, &ind);
 	buffer_append_float32_auto(buffer, conf->gpd_current_kp, &ind);
 	buffer_append_float32_auto(buffer, conf->gpd_current_ki, &ind);
+	buffer[ind++] = conf->sp_pid_loop_rate;
 	buffer_append_float32_auto(buffer, conf->s_pid_kp, &ind);
 	buffer_append_float32_auto(buffer, conf->s_pid_ki, &ind);
 	buffer_append_float32_auto(buffer, conf->s_pid_kd, &ind);
@@ -143,9 +145,11 @@ int32_t confgenerator_serialize_mcconf(uint8_t *buffer, const mc_configuration *
 	buffer_append_float32_auto(buffer, conf->p_pid_kp, &ind);
 	buffer_append_float32_auto(buffer, conf->p_pid_ki, &ind);
 	buffer_append_float32_auto(buffer, conf->p_pid_kd, &ind);
+	buffer_append_float32_auto(buffer, conf->p_pid_kd_proc, &ind);
 	buffer_append_float32_auto(buffer, conf->p_pid_kd_filter, &ind);
 	buffer_append_float32_auto(buffer, conf->p_pid_ang_div, &ind);
 	buffer_append_float16(buffer, conf->p_pid_gain_dec_angle, 10, &ind);
+	buffer_append_float32_auto(buffer, conf->p_pid_offset, &ind);
 	buffer_append_float32_auto(buffer, conf->cc_startup_boost_duty, &ind);
 	buffer_append_float32_auto(buffer, conf->cc_min_current, &ind);
 	buffer_append_float32_auto(buffer, conf->cc_gain, &ind);
@@ -284,13 +288,21 @@ int32_t confgenerator_serialize_appconf(uint8_t *buffer, const app_configuration
 	buffer_append_uint16(buffer, conf->app_balance_conf.fault_delay_switch_half, &ind);
 	buffer_append_uint16(buffer, conf->app_balance_conf.fault_delay_switch_full, &ind);
 	buffer_append_uint16(buffer, conf->app_balance_conf.fault_adc_half_erpm, &ind);
-	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_angle, &ind);
-	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_speed, &ind);
-	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_duty, &ind);
-	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_high_voltage, &ind);
-	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_low_voltage, &ind);
+	buffer_append_float16(buffer, conf->app_balance_conf.tiltback_duty_angle, 100, &ind);
+	buffer_append_float16(buffer, conf->app_balance_conf.tiltback_duty_speed, 100, &ind);
+	buffer_append_float16(buffer, conf->app_balance_conf.tiltback_duty, 1000, &ind);
+	buffer_append_float16(buffer, conf->app_balance_conf.tiltback_hv_angle, 100, &ind);
+	buffer_append_float16(buffer, conf->app_balance_conf.tiltback_hv_speed, 100, &ind);
+	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_hv, &ind);
+	buffer_append_float16(buffer, conf->app_balance_conf.tiltback_lv_angle, 100, &ind);
+	buffer_append_float16(buffer, conf->app_balance_conf.tiltback_lv_speed, 100, &ind);
+	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_lv, &ind);
+	buffer_append_float16(buffer, conf->app_balance_conf.tiltback_return_speed, 100, &ind);
 	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_constant, &ind);
 	buffer_append_uint16(buffer, conf->app_balance_conf.tiltback_constant_erpm, &ind);
+	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_variable, &ind);
+	buffer_append_float32_auto(buffer, conf->app_balance_conf.tiltback_variable_max, &ind);
+	buffer_append_float16(buffer, conf->app_balance_conf.noseangling_speed, 100, &ind);
 	buffer_append_float32_auto(buffer, conf->app_balance_conf.startup_pitch_tolerance, &ind);
 	buffer_append_float32_auto(buffer, conf->app_balance_conf.startup_roll_tolerance, &ind);
 	buffer_append_float32_auto(buffer, conf->app_balance_conf.startup_speed, &ind);
@@ -351,10 +363,6 @@ int32_t confgenerator_serialize_appconf(uint8_t *buffer, const app_configuration
 	buffer_append_float32_auto(buffer, conf->imu_conf.gyro_offsets[0], &ind);
 	buffer_append_float32_auto(buffer, conf->imu_conf.gyro_offsets[1], &ind);
 	buffer_append_float32_auto(buffer, conf->imu_conf.gyro_offsets[2], &ind);
-	buffer_append_float32_auto(buffer, conf->imu_conf.gyro_offset_comp_fact[0], &ind);
-	buffer_append_float32_auto(buffer, conf->imu_conf.gyro_offset_comp_fact[1], &ind);
-	buffer_append_float32_auto(buffer, conf->imu_conf.gyro_offset_comp_fact[2], &ind);
-	buffer_append_float32_auto(buffer, conf->imu_conf.gyro_offset_comp_clamp, &ind);
 
 	return ind;
 }
@@ -482,6 +490,7 @@ bool confgenerator_deserialize_mcconf(const uint8_t *buffer, mc_configuration *c
 	conf->foc_offsets_voltage_undriven[2] = buffer_get_float16(buffer, 10000, &ind);
 	conf->foc_phase_filter_enable = buffer[ind++];
 	conf->foc_phase_filter_max_erpm = buffer_get_float32_auto(buffer, &ind);
+	conf->foc_mtpa_mode = buffer[ind++];
 	conf->foc_fw_current_max = buffer_get_float32_auto(buffer, &ind);
 	conf->foc_fw_duty_start = buffer_get_float16(buffer, 10000, &ind);
 	conf->foc_fw_ramp_time = buffer_get_float16(buffer, 1000, &ind);
@@ -491,6 +500,7 @@ bool confgenerator_deserialize_mcconf(const uint8_t *buffer, mc_configuration *c
 	conf->gpd_current_filter_const = buffer_get_float16(buffer, 10000, &ind);
 	conf->gpd_current_kp = buffer_get_float32_auto(buffer, &ind);
 	conf->gpd_current_ki = buffer_get_float32_auto(buffer, &ind);
+	conf->sp_pid_loop_rate = buffer[ind++];
 	conf->s_pid_kp = buffer_get_float32_auto(buffer, &ind);
 	conf->s_pid_ki = buffer_get_float32_auto(buffer, &ind);
 	conf->s_pid_kd = buffer_get_float32_auto(buffer, &ind);
@@ -501,9 +511,11 @@ bool confgenerator_deserialize_mcconf(const uint8_t *buffer, mc_configuration *c
 	conf->p_pid_kp = buffer_get_float32_auto(buffer, &ind);
 	conf->p_pid_ki = buffer_get_float32_auto(buffer, &ind);
 	conf->p_pid_kd = buffer_get_float32_auto(buffer, &ind);
+	conf->p_pid_kd_proc = buffer_get_float32_auto(buffer, &ind);
 	conf->p_pid_kd_filter = buffer_get_float32_auto(buffer, &ind);
 	conf->p_pid_ang_div = buffer_get_float32_auto(buffer, &ind);
 	conf->p_pid_gain_dec_angle = buffer_get_float16(buffer, 10, &ind);
+	conf->p_pid_offset = buffer_get_float32_auto(buffer, &ind);
 	conf->cc_startup_boost_duty = buffer_get_float32_auto(buffer, &ind);
 	conf->cc_min_current = buffer_get_float32_auto(buffer, &ind);
 	conf->cc_gain = buffer_get_float32_auto(buffer, &ind);
@@ -645,13 +657,21 @@ bool confgenerator_deserialize_appconf(const uint8_t *buffer, app_configuration 
 	conf->app_balance_conf.fault_delay_switch_half = buffer_get_uint16(buffer, &ind);
 	conf->app_balance_conf.fault_delay_switch_full = buffer_get_uint16(buffer, &ind);
 	conf->app_balance_conf.fault_adc_half_erpm = buffer_get_uint16(buffer, &ind);
-	conf->app_balance_conf.tiltback_angle = buffer_get_float32_auto(buffer, &ind);
-	conf->app_balance_conf.tiltback_speed = buffer_get_float32_auto(buffer, &ind);
-	conf->app_balance_conf.tiltback_duty = buffer_get_float32_auto(buffer, &ind);
-	conf->app_balance_conf.tiltback_high_voltage = buffer_get_float32_auto(buffer, &ind);
-	conf->app_balance_conf.tiltback_low_voltage = buffer_get_float32_auto(buffer, &ind);
+	conf->app_balance_conf.tiltback_duty_angle = buffer_get_float16(buffer, 100, &ind);
+	conf->app_balance_conf.tiltback_duty_speed = buffer_get_float16(buffer, 100, &ind);
+	conf->app_balance_conf.tiltback_duty = buffer_get_float16(buffer, 1000, &ind);
+	conf->app_balance_conf.tiltback_hv_angle = buffer_get_float16(buffer, 100, &ind);
+	conf->app_balance_conf.tiltback_hv_speed = buffer_get_float16(buffer, 100, &ind);
+	conf->app_balance_conf.tiltback_hv = buffer_get_float32_auto(buffer, &ind);
+	conf->app_balance_conf.tiltback_lv_angle = buffer_get_float16(buffer, 100, &ind);
+	conf->app_balance_conf.tiltback_lv_speed = buffer_get_float16(buffer, 100, &ind);
+	conf->app_balance_conf.tiltback_lv = buffer_get_float32_auto(buffer, &ind);
+	conf->app_balance_conf.tiltback_return_speed = buffer_get_float16(buffer, 100, &ind);
 	conf->app_balance_conf.tiltback_constant = buffer_get_float32_auto(buffer, &ind);
 	conf->app_balance_conf.tiltback_constant_erpm = buffer_get_uint16(buffer, &ind);
+	conf->app_balance_conf.tiltback_variable = buffer_get_float32_auto(buffer, &ind);
+	conf->app_balance_conf.tiltback_variable_max = buffer_get_float32_auto(buffer, &ind);
+	conf->app_balance_conf.noseangling_speed = buffer_get_float16(buffer, 100, &ind);
 	conf->app_balance_conf.startup_pitch_tolerance = buffer_get_float32_auto(buffer, &ind);
 	conf->app_balance_conf.startup_roll_tolerance = buffer_get_float32_auto(buffer, &ind);
 	conf->app_balance_conf.startup_speed = buffer_get_float32_auto(buffer, &ind);
@@ -712,10 +732,6 @@ bool confgenerator_deserialize_appconf(const uint8_t *buffer, app_configuration 
 	conf->imu_conf.gyro_offsets[0] = buffer_get_float32_auto(buffer, &ind);
 	conf->imu_conf.gyro_offsets[1] = buffer_get_float32_auto(buffer, &ind);
 	conf->imu_conf.gyro_offsets[2] = buffer_get_float32_auto(buffer, &ind);
-	conf->imu_conf.gyro_offset_comp_fact[0] = buffer_get_float32_auto(buffer, &ind);
-	conf->imu_conf.gyro_offset_comp_fact[1] = buffer_get_float32_auto(buffer, &ind);
-	conf->imu_conf.gyro_offset_comp_fact[2] = buffer_get_float32_auto(buffer, &ind);
-	conf->imu_conf.gyro_offset_comp_clamp = buffer_get_float32_auto(buffer, &ind);
 
 	return true;
 }
@@ -836,6 +852,7 @@ void confgenerator_set_defaults_mcconf(mc_configuration *conf) {
 	conf->foc_offsets_voltage_undriven[2] = MCCONF_FOC_OFFSETS_VOLTAGE_UNDRIVEN_2;
 	conf->foc_phase_filter_enable = MCCONF_FOC_PHASE_FILTER_ENABLE;
 	conf->foc_phase_filter_max_erpm = MCCONF_FOC_PHASE_FILTER_MAX_ERPM;
+	conf->foc_mtpa_mode = MCCONF_FOC_MTPA_MODE;
 	conf->foc_fw_current_max = MCCONF_FOC_FW_CURRENT_MAX;
 	conf->foc_fw_duty_start = MCCONF_FOC_FW_DUTY_START;
 	conf->foc_fw_ramp_time = MCCONF_FOC_FW_RAMP_TIME;
@@ -845,6 +862,7 @@ void confgenerator_set_defaults_mcconf(mc_configuration *conf) {
 	conf->gpd_current_filter_const = MCCONF_GPD_CURRENT_FILTER_CONST;
 	conf->gpd_current_kp = MCCONF_GPD_CURRENT_KP;
 	conf->gpd_current_ki = MCCONF_GPD_CURRENT_KI;
+	conf->sp_pid_loop_rate = MCCONF_SP_PID_LOOP_RATE;
 	conf->s_pid_kp = MCCONF_S_PID_KP;
 	conf->s_pid_ki = MCCONF_S_PID_KI;
 	conf->s_pid_kd = MCCONF_S_PID_KD;
@@ -855,9 +873,11 @@ void confgenerator_set_defaults_mcconf(mc_configuration *conf) {
 	conf->p_pid_kp = MCCONF_P_PID_KP;
 	conf->p_pid_ki = MCCONF_P_PID_KI;
 	conf->p_pid_kd = MCCONF_P_PID_KD;
+	conf->p_pid_kd_proc = MCCONF_P_PID_KD_PROC;
 	conf->p_pid_kd_filter = MCCONF_P_PID_KD_FILTER;
 	conf->p_pid_ang_div = MCCONF_P_PID_ANG_DIV;
 	conf->p_pid_gain_dec_angle = MCCONF_P_PID_GAIN_DEC_ANGLE;
+	conf->p_pid_offset = MCCONF_P_PID_OFFSET;
 	conf->cc_startup_boost_duty = MCCONF_CC_STARTUP_BOOST_DUTY;
 	conf->cc_min_current = MCCONF_CC_MIN_CURRENT;
 	conf->cc_gain = MCCONF_CC_GAIN;
@@ -990,13 +1010,21 @@ void confgenerator_set_defaults_appconf(app_configuration *conf) {
 	conf->app_balance_conf.fault_delay_switch_half = APPCONF_BALANCE_FAULT_DELAY_SWITCH_HALF;
 	conf->app_balance_conf.fault_delay_switch_full = APPCONF_BALANCE_FAULT_DELAY_SWITCH_FULL;
 	conf->app_balance_conf.fault_adc_half_erpm = APPCONF_BALANCE_FAULT_ADC_HALF_ERPM;
-	conf->app_balance_conf.tiltback_angle = APPCONF_BALANCE_TILTBACK_ANGLE;
-	conf->app_balance_conf.tiltback_speed = APPCONF_BALANCE_TILTBACK_SPEED;
+	conf->app_balance_conf.tiltback_duty_angle = APPCONF_BALANCE_TILTBACK_DUTY_ANGLE;
+	conf->app_balance_conf.tiltback_duty_speed = APPCONF_BALANCE_TILTBACK_DUTY_SPEED;
 	conf->app_balance_conf.tiltback_duty = APPCONF_BALANCE_TILTBACK_DUTY;
-	conf->app_balance_conf.tiltback_high_voltage = APPCONF_BALANCE_TILTBACK_HIGH_V;
-	conf->app_balance_conf.tiltback_low_voltage = APPCONF_BALANCE_TILTBACK_LOW_V;
+	conf->app_balance_conf.tiltback_hv_angle = APPCONF_BALANCE_TILTBACK_HV_ANGLE;
+	conf->app_balance_conf.tiltback_hv_speed = APPCONF_BALANCE_TILTBACK_HV_SPEED;
+	conf->app_balance_conf.tiltback_hv = APPCONF_BALANCE_TILTBACK_HV;
+	conf->app_balance_conf.tiltback_lv_angle = APPCONF_BALANCE_TILTBACK_LV_ANGLE;
+	conf->app_balance_conf.tiltback_lv_speed = APPCONF_BALANCE_TILTBACK_LV_SPEED;
+	conf->app_balance_conf.tiltback_lv = APPCONF_BALANCE_TILTBACK_LV;
+	conf->app_balance_conf.tiltback_return_speed = APPCONF_BALANCE_TILTBACK_RETURN_SPEED;
 	conf->app_balance_conf.tiltback_constant = APPCONF_BALANCE_TILTBACK_CONSTANT;
 	conf->app_balance_conf.tiltback_constant_erpm = APPCONF_BALANCE_TILTBACK_CONSTANT_ERPM;
+	conf->app_balance_conf.tiltback_variable = APPCONF_BALANCE_TILTBACK_VARIABLE;
+	conf->app_balance_conf.tiltback_variable_max = APPCONF_BALANCE_TILTBACK_VARIABLE_MAX;
+	conf->app_balance_conf.noseangling_speed = APPCONF_BALANCE_NOSEANGLING_SPEED;
 	conf->app_balance_conf.startup_pitch_tolerance = APPCONF_BALANCE_STARTUP_PITCH_TOLERANCE;
 	conf->app_balance_conf.startup_roll_tolerance = APPCONF_BALANCE_STARTUP_ROLL_TOLERANCE;
 	conf->app_balance_conf.startup_speed = APPCONF_BALANCE_STARTUP_SPEED;
@@ -1057,8 +1085,4 @@ void confgenerator_set_defaults_appconf(app_configuration *conf) {
 	conf->imu_conf.gyro_offsets[0] = APPCONF_IMU_G_OFFSET_0;
 	conf->imu_conf.gyro_offsets[1] = APPCONF_IMU_G_OFFSET_1;
 	conf->imu_conf.gyro_offsets[2] = APPCONF_IMU_G_OFFSET_2;
-	conf->imu_conf.gyro_offset_comp_fact[0] = APPCONF_IMU_G_OFFSET_COMP_FACT_0;
-	conf->imu_conf.gyro_offset_comp_fact[1] = APPCONF_IMU_G_OFFSET_COMP_FACT_1;
-	conf->imu_conf.gyro_offset_comp_fact[2] = APPCONF_IMU_G_OFFSET_COMP_FACT_2;
-	conf->imu_conf.gyro_offset_comp_clamp = APPCONF_IMU_G_OFFSET_COMP_CLAMP;
 }

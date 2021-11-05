@@ -56,7 +56,10 @@ typedef enum {
 
 typedef enum {
 	CENTERING = 0,
-	TILTBACK
+	TILTBACK_DUTY,
+	TILTBACK_HV,
+	TILTBACK_LV,
+	TILTBACK_NONE
 } SetpointAdjustmentType;
 
 typedef enum {
@@ -70,6 +73,11 @@ typedef struct{
 	float z1, z2;
 } Biquad;
 
+typedef enum {
+	BQ_LOWPASS,
+	BQ_HIGHPASS
+} BiquadType;
+
 // Balance thread
 static THD_FUNCTION(balance_thread, arg);
 static THD_WORKING_AREA(balance_thread_wa, 2048); // 2kb stack for this thread
@@ -80,7 +88,10 @@ static thread_t *app_thread;
 static volatile balance_config balance_conf;
 static volatile imu_config imu_conf;
 static systime_t loop_time;
-static float startup_step_size, tiltback_step_size, torquetilt_on_step_size, torquetilt_off_step_size, turntilt_step_size;
+static float startup_step_size;
+static float tiltback_duty_step_size, tiltback_hv_step_size, tiltback_lv_step_size, tiltback_return_step_size;
+static float torquetilt_on_step_size, torquetilt_off_step_size, turntilt_step_size;
+static float tiltback_variable, tiltback_variable_max_erpm, noseangling_step_size;
 
 // Runtime values read from elsewhere
 static float pitch_angle, last_pitch_angle, roll_angle, abs_roll_angle, abs_roll_angle_sin;
@@ -98,7 +109,7 @@ static float proportional, integral, derivative;
 static float last_proportional, abs_proportional;
 static float pid_value;
 static float setpoint, setpoint_target, setpoint_target_interpolated;
-static float constanttilt_target, constanttilt_interpolated;
+static float noseangling_interpolated;
 static float torquetilt_filtered_current, torquetilt_target, torquetilt_interpolated;
 static Biquad torquetilt_current_biquad;
 static float turntilt_target, turntilt_interpolated;
@@ -127,11 +138,32 @@ static void app_balance_sample_debug(void);
 static void app_balance_experiment(void);
 
 // Utility Functions
-float biquad_process(float in, Biquad *biquad) {
+float biquad_process(Biquad *biquad, float in) {
     float out = in * biquad->a0 + biquad->z1;
     biquad->z1 = in * biquad->a1 + biquad->z2 - biquad->b1 * out;
     biquad->z2 = in * biquad->a2 - biquad->b2 * out;
     return out;
+}
+void biquad_config(Biquad *biquad, BiquadType type, float Fc) {
+	float K = tanf(M_PI * Fc);	// -0.0159;
+	float Q = 0.707; // maximum sharpness (0.5 = maximum smoothness)
+	float norm = 1 / (1 + K / Q + K * K);
+	if (type == BQ_LOWPASS) {
+		biquad->a0 = K * K * norm;
+		biquad->a1 = 2 * biquad->a0;
+		biquad->a2 = biquad->a0;
+	}
+	else if (type == BQ_HIGHPASS) {
+		biquad->a0 = 1 * norm;
+		biquad->a1 = -2 * biquad->a0;
+		biquad->a2 = biquad->a0;
+	}
+	biquad->b1 = 2 * (K * K - 1) * norm;
+	biquad->b2 = (1 - K / Q + K * K) * norm;
+}
+void biquad_reset(Biquad *biquad) {
+	biquad->z1 = 0;
+	biquad->z2 = 0;
 }
 
 // Exposed Functions
@@ -144,10 +176,14 @@ void app_balance_configure(balance_config *conf, imu_config *conf2) {
 	motor_timeout = ((1000.0 / balance_conf.hertz)/1000.0) * 20; // Times 20 for a nice long grace period
 
 	startup_step_size = balance_conf.startup_speed / balance_conf.hertz;
-	tiltback_step_size = balance_conf.tiltback_speed / balance_conf.hertz;
+	tiltback_duty_step_size = balance_conf.tiltback_duty_speed / balance_conf.hertz;
+	tiltback_hv_step_size = balance_conf.tiltback_hv_speed / balance_conf.hertz;
+	tiltback_lv_step_size = balance_conf.tiltback_lv_speed / balance_conf.hertz;
+	tiltback_return_step_size = balance_conf.tiltback_return_speed / balance_conf.hertz;
 	torquetilt_on_step_size = balance_conf.torquetilt_on_speed / balance_conf.hertz;
 	torquetilt_off_step_size = balance_conf.torquetilt_off_speed / balance_conf.hertz;
 	turntilt_step_size = balance_conf.turntilt_speed / balance_conf.hertz;
+	noseangling_step_size = balance_conf.noseangling_speed / balance_conf.hertz;
 
 	// Init Filters
 	if(balance_conf.loop_time_filter > 0){
@@ -165,37 +201,20 @@ void app_balance_configure(balance_config *conf, imu_config *conf2) {
 	}
 	if(balance_conf.kd_biquad_lowpass > 0){
 		float Fc = balance_conf.kd_biquad_lowpass / balance_conf.hertz;
-		float Q = 0.707; // Flat response
-		float K = tan(M_PI * Fc);
-		float norm = 1 / (1 + K / Q + K * K);
-		d_biquad_lowpass.a0 = K * K * norm;
-		d_biquad_lowpass.a1 = 2 * d_biquad_lowpass.a0;
-		d_biquad_lowpass.a2 = d_biquad_lowpass.a0;
-		d_biquad_lowpass.b1 = 2 * (K * K - 1) * norm;
-		d_biquad_lowpass.b2 = (1 - K / Q + K * K) * norm;
+		biquad_config(&d_biquad_lowpass, BQ_LOWPASS, Fc);
 	}
 	if(balance_conf.kd_biquad_highpass > 0){
 		float Fc = balance_conf.kd_biquad_highpass / balance_conf.hertz;
-		float Q = 0.707; // Flat response
-		float K = tan(M_PI * Fc);
-		float norm = 1 / (1 + K / Q + K * K);
-		d_biquad_highpass.a0 = 1 * norm;
-		d_biquad_highpass.a1 = -2 * d_biquad_highpass.a0;
-		d_biquad_highpass.a2 = d_biquad_highpass.a0;
-		d_biquad_highpass.b1 = 2 * (K * K - 1) * norm;
-		d_biquad_highpass.b2 = (1 - K / Q + K * K) * norm;
+		biquad_config(&d_biquad_highpass, BQ_HIGHPASS, Fc);
 	}
 	if(balance_conf.torquetilt_filter > 0){ // Torquetilt Current Biquad
 		float Fc = balance_conf.torquetilt_filter / balance_conf.hertz;
-		float Q = 0.707; // Flat response
-		float K = tan(M_PI * Fc);
-		float norm = 1 / (1 + K / Q + K * K);
-		torquetilt_current_biquad.a0 = K * K * norm;
-		torquetilt_current_biquad.a1 = 2 * torquetilt_current_biquad.a0;
-		torquetilt_current_biquad.a2 = torquetilt_current_biquad.a0;
-		torquetilt_current_biquad.b1 = 2 * (K * K - 1) * norm;
-		torquetilt_current_biquad.b2 = (1 - K / Q + K * K) * norm;
+		biquad_config(&torquetilt_current_biquad, BQ_LOWPASS, Fc);
 	}
+
+	// Variable nose angle adjustment / tiltback (setting is per 1000erpm, convert to per erpm)
+	tiltback_variable = balance_conf.tiltback_variable / 1000;
+	tiltback_variable_max_erpm = fabsf(balance_conf.tiltback_variable_max / tiltback_variable);
 
 	// Reset loop time variables
 	last_time = 0;
@@ -278,21 +297,17 @@ static void reset_vars(void){
 	yaw_last_proportional = 0;
 	d_pt1_lowpass_state = 0;
 	d_pt1_highpass_state = 0;
-	d_biquad_lowpass.z1 = 0;
-	d_biquad_lowpass.z2 = 0;
-	d_biquad_highpass.z1 = 0;
-	d_biquad_highpass.z2 = 0;
+	biquad_reset(&d_biquad_lowpass);
+	biquad_reset(&d_biquad_highpass);
 	// Set values for startup
 	setpoint = pitch_angle;
 	setpoint_target_interpolated = pitch_angle;
 	setpoint_target = 0;
-	constanttilt_target = 0;
-	constanttilt_interpolated = 0;
+	noseangling_interpolated = 0;
 	torquetilt_target = 0;
 	torquetilt_interpolated = 0;
 	torquetilt_filtered_current = 0;
-	torquetilt_current_biquad.z1 = 0;
-	torquetilt_current_biquad.z2 = 0;
+	biquad_reset(&torquetilt_current_biquad);
 	turntilt_target = 0;
 	turntilt_interpolated = 0;
 	setpointAdjustmentType = CENTERING;
@@ -308,8 +323,16 @@ static float get_setpoint_adjustment_step_size(void){
 	switch(setpointAdjustmentType){
 		case (CENTERING):
 			return startup_step_size;
-		case (TILTBACK):
-			return tiltback_step_size;
+		case (TILTBACK_DUTY):
+			return tiltback_duty_step_size;
+		case (TILTBACK_HV):
+			return tiltback_hv_step_size;
+		case (TILTBACK_LV):
+			return tiltback_lv_step_size;
+		case (TILTBACK_NONE):
+			return tiltback_return_step_size;
+		default:
+			;
 	}
 	return 0;
 }
@@ -376,30 +399,30 @@ static void calculate_setpoint_target(void){
 		state = RUNNING;
 	}else if(abs_duty_cycle > balance_conf.tiltback_duty){
 		if(erpm > 0){
-			setpoint_target = balance_conf.tiltback_angle;
+			setpoint_target = balance_conf.tiltback_duty_angle;
 		} else {
-			setpoint_target = -balance_conf.tiltback_angle;
+			setpoint_target = -balance_conf.tiltback_duty_angle;
 		}
-		setpointAdjustmentType = TILTBACK;
+		setpointAdjustmentType = TILTBACK_DUTY;
 		state = RUNNING_TILTBACK_DUTY;
-	}else if(abs_duty_cycle > 0.05 && GET_INPUT_VOLTAGE() > balance_conf.tiltback_high_voltage){
+	}else if(abs_duty_cycle > 0.05 && GET_INPUT_VOLTAGE() > balance_conf.tiltback_hv){
 		if(erpm > 0){
-			setpoint_target = balance_conf.tiltback_angle;
+			setpoint_target = balance_conf.tiltback_hv_angle;
 		} else {
-			setpoint_target = -balance_conf.tiltback_angle;
+			setpoint_target = -balance_conf.tiltback_hv_angle;
 		}
-		setpointAdjustmentType = TILTBACK;
+		setpointAdjustmentType = TILTBACK_HV;
 		state = RUNNING_TILTBACK_HIGH_VOLTAGE;
-	}else if(abs_duty_cycle > 0.05 && GET_INPUT_VOLTAGE() < balance_conf.tiltback_low_voltage){
+	}else if(abs_duty_cycle > 0.05 && GET_INPUT_VOLTAGE() < balance_conf.tiltback_lv){
 		if(erpm > 0){
-			setpoint_target = balance_conf.tiltback_angle;
+			setpoint_target = balance_conf.tiltback_lv_angle;
 		} else {
-			setpoint_target = -balance_conf.tiltback_angle;
+			setpoint_target = -balance_conf.tiltback_lv_angle;
 		}
-		setpointAdjustmentType = TILTBACK;
+		setpointAdjustmentType = TILTBACK_LV;
 		state = RUNNING_TILTBACK_LOW_VOLTAGE;
 	}else{
-		setpointAdjustmentType = TILTBACK;
+		setpointAdjustmentType = TILTBACK_NONE;
 		setpoint_target = 0;
 		state = RUNNING;
 	}
@@ -418,30 +441,35 @@ static void calculate_setpoint_interpolated(void){
 	}
 }
 
-static void apply_constanttilt(void){
-	// Nose angle adjustment
-	if(erpm > balance_conf.tiltback_constant_erpm){
-		constanttilt_target = balance_conf.tiltback_constant;
-	} else if(erpm < -balance_conf.tiltback_constant_erpm){
-		constanttilt_target = -balance_conf.tiltback_constant;
-	}else{
-		constanttilt_target = 0;
+static void apply_noseangling(void){
+	// Nose angle adjustment, add variable then constant tiltback
+	float noseangling_target = 0;
+	if (fabsf(erpm) > tiltback_variable_max_erpm) {
+		noseangling_target = fabsf(balance_conf.tiltback_variable_max) * SIGN(erpm);
+	} else {
+		noseangling_target = tiltback_variable * erpm;
 	}
 
-	if(fabsf(constanttilt_target - constanttilt_interpolated) < tiltback_step_size){
-		constanttilt_interpolated = constanttilt_target;
-	}else if (constanttilt_target - constanttilt_interpolated > 0){
-		constanttilt_interpolated += tiltback_step_size;
-	}else{
-		constanttilt_interpolated -= tiltback_step_size;
+	if(erpm > balance_conf.tiltback_constant_erpm){
+		noseangling_target += balance_conf.tiltback_constant;
+	} else if(erpm < -balance_conf.tiltback_constant_erpm){
+		noseangling_target += -balance_conf.tiltback_constant;
 	}
-	setpoint += constanttilt_interpolated;
+
+	if(fabsf(noseangling_target - noseangling_interpolated) < noseangling_step_size){
+		noseangling_interpolated = noseangling_target;
+	}else if (noseangling_target - noseangling_interpolated > 0){
+		noseangling_interpolated += noseangling_step_size;
+	}else{
+		noseangling_interpolated -= noseangling_step_size;
+	}
+	setpoint += noseangling_interpolated;
 }
 
 static void apply_torquetilt(void){
 	// Filter current (Biquad)
 	if(balance_conf.torquetilt_filter > 0){
-		torquetilt_filtered_current = biquad_process(motor_current, &torquetilt_current_biquad);
+		torquetilt_filtered_current = biquad_process(&torquetilt_current_biquad, motor_current);
 	}else{
 		torquetilt_filtered_current  = motor_current;
 	}
@@ -594,10 +622,10 @@ static THD_FUNCTION(balance_thread, arg) {
 
 		// Get the values we want
 		last_pitch_angle = pitch_angle;
-		pitch_angle = imu_get_pitch() * 180.0f / M_PI;
-		roll_angle = imu_get_roll() * 180.0f / M_PI;
+		pitch_angle = RAD2DEG_f(imu_get_pitch());
+		roll_angle = RAD2DEG_f(imu_get_roll());
 		abs_roll_angle = fabsf(roll_angle);
-		abs_roll_angle_sin = sinf(abs_roll_angle * M_PI / 180.0f);
+		abs_roll_angle_sin = sinf(DEG2RAD_f(abs_roll_angle));
 		imu_get_gyro(gyro);
 		duty_cycle = mc_interface_get_duty_cycle_now();
 		abs_duty_cycle = fabsf(duty_cycle);
@@ -670,7 +698,7 @@ static THD_FUNCTION(balance_thread, arg) {
 				calculate_setpoint_target();
 				calculate_setpoint_interpolated();
 				setpoint = setpoint_target_interpolated;
-				apply_constanttilt();
+				apply_noseangling();
 				apply_torquetilt();
 				apply_turntilt();
 
@@ -692,10 +720,10 @@ static THD_FUNCTION(balance_thread, arg) {
 					derivative = derivative - d_pt1_highpass_state;
 				}
 				if(balance_conf.kd_biquad_lowpass > 0){
-					derivative = biquad_process(derivative, &d_biquad_lowpass);
+					derivative = biquad_process(&d_biquad_lowpass, derivative);
 				}
 				if(balance_conf.kd_biquad_highpass > 0){
-					derivative = biquad_process(derivative, &d_biquad_highpass);
+					derivative = biquad_process(&d_biquad_highpass, derivative);
 				}
 
 				pid_value = (balance_conf.kp * proportional) + (balance_conf.ki * integral) + (balance_conf.kd * derivative);

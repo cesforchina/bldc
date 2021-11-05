@@ -483,7 +483,7 @@ void terminal_process_string(char *str) {
 				rpm_avg /= samples;
 				iq_avg /= samples;
 
-				float linkage = (vq_avg - res * iq_avg) / (rpm_avg * ((2.0 * M_PI) / 60.0));
+				float linkage = (vq_avg - res * iq_avg) / RPM2RADPS_f(rpm_avg);
 
 				commands_printf("Flux linkage: %.7f\n", (double)linkage);
 			} else {
@@ -861,15 +861,25 @@ void terminal_process_string(char *str) {
 		}
 	} else if (strcmp(argv[0], "encoder") == 0) {
 		const volatile mc_configuration *mcconf = mc_interface_get_configuration();
+
 		if (mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_AS5047_SPI ||
 				mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_MT6816_SPI ||
 				mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_AD2S1205 ||
 				mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_TS5700N8501 ||
 				mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_TS5700N8501_MULTITURN) {
-			commands_printf("SPI encoder value: %d, errors: %d, error rate: %.3f %%",
-					(unsigned int)encoder_spi_get_val(),
-					encoder_spi_get_error_cnt(),
-					(double)encoder_spi_get_error_rate() * (double)100.0);
+
+			if (mcconf->m_sensor_port_mode != SENSOR_PORT_MODE_AS5047_SPI) {
+				commands_printf("SPI encoder value: %d, errors: %d, error rate: %.3f %%",
+						(unsigned int)encoder_spi_get_val(),
+						encoder_spi_get_error_cnt(),
+						(double)encoder_spi_get_error_rate() * (double)100.0);
+			} else {
+				commands_printf("SPI encoder value: %d, errors: %d, error rate: %.3f %%, Connected: %u",
+						(unsigned int)encoder_spi_get_val(),
+						encoder_spi_get_error_cnt(),
+						(double)encoder_spi_get_error_rate() * (double)100.0,
+						encoder_AS504x_get_diag().is_connected);
+			}
 
 			if (mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_TS5700N8501 ||
 					mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_TS5700N8501_MULTITURN) {
@@ -885,6 +895,22 @@ void terminal_process_string(char *str) {
 						encoder_get_no_magnet_error_cnt(),
 						(double)encoder_get_no_magnet_error_rate() * (double)100.0);
 			}
+
+#if AS504x_USE_SW_MOSI_PIN || AS5047_USE_HW_SPI_PINS
+			if (mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_AS5047_SPI) {
+				commands_printf("\nAS5047 DIAGNOSTICS:\n"
+						"AGC       : %u\n"
+						"Magnitude : %u\n"
+						"COF       : %u\n"
+						"OCF       : %u\n"
+						"COMP_low  : %u\n"
+						"COMP_high : %u\n",
+						encoder_AS504x_get_diag().AGC_value, encoder_AS504x_get_diag().magnitude,
+						encoder_AS504x_get_diag().is_COF, encoder_AS504x_get_diag().is_OCF,
+						encoder_AS504x_get_diag().is_Comp_low,
+						encoder_AS504x_get_diag().is_Comp_high);
+			}
+#endif
 		}
 
 		if (mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_SINCOS) {
@@ -1080,6 +1106,21 @@ void terminal_process_string(char *str) {
 		commands_printf("Discrepancy is expected due to run-time recalculation of config params.\n");
 	} else if (strcmp(argv[0], "drv_reset_faults") == 0) {
 		HW_RESET_DRV_FAULTS();
+	} else if (strcmp(argv[0], "update_pid_pos_offset") == 0) {
+		if (argc == 3) {
+			float angle_now = -500.0;
+			int store = false;
+
+			sscanf(argv[1], "%f", &angle_now);
+			sscanf(argv[2], "%d", &store);
+
+			if (angle_now > -360.0 && angle_now < 360.0) {
+				mc_interface_update_pid_pos_offset(angle_now, store);
+				commands_printf("OK\n");
+			} else {
+				commands_printf("Invalid arguments\n");
+			}
+		}
 	}
 
 	// The help command
@@ -1160,7 +1201,7 @@ void terminal_process_string(char *str) {
 
 		commands_printf("measure_linkage_openloop [current] [duty] [erpm_per_sec] [motor_res] [motor_ind]");
 		commands_printf("  Run the motor in openloop FOC and measure the flux linkage");
-		commands_printf("  example measure_linkage 5 0.5 1000 0.076 0.000015");
+		commands_printf("  example measure_linkage_openloop 5 0.5 1000 0.076 0.000015");
 		commands_printf("  tip: measure the resistance with measure_res first");
 
 		commands_printf("foc_state");
@@ -1224,6 +1265,9 @@ void terminal_process_string(char *str) {
 
 		commands_printf("drv_reset_faults");
 		commands_printf("  Reset gate driver faults (if possible).");
+
+		commands_printf("update_pid_pos_offset [angle_now] [store]");
+		commands_printf("  Update position PID offset.");
 
 		for (int i = 0;i < callback_write;i++) {
 			if (callbacks[i].cbf == 0) {

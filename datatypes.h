@@ -72,6 +72,12 @@ typedef enum {
 	OUT_AUX_MODE_UNUSED,
 	OUT_AUX_MODE_ON_WHEN_RUNNING,
 	OUT_AUX_MODE_ON_WHEN_NOT_RUNNING,
+	OUT_AUX_MODE_MOTOR_50,
+	OUT_AUX_MODE_MOSFET_50,
+	OUT_AUX_MODE_MOTOR_70,
+	OUT_AUX_MODE_MOSFET_70,
+	OUT_AUX_MODE_MOTOR_MOSFET_50,
+	OUT_AUX_MODE_MOTOR_MOSFET_70,
 } out_aux_mode;
 
 // Temperature sensor type
@@ -136,7 +142,8 @@ typedef enum {
 	FAULT_CODE_RESOLVER_LOS,
 	FAULT_CODE_FLASH_CORRUPTION_APP_CFG,
 	FAULT_CODE_FLASH_CORRUPTION_MC_CFG,
-	FAULT_CODE_ENCODER_NO_MAGNET
+	FAULT_CODE_ENCODER_NO_MAGNET,
+	FAULT_CODE_ENCODER_MAGNET_TOO_STRONG
 } mc_fault_code;
 
 typedef enum {
@@ -285,6 +292,24 @@ typedef struct {
 	bool is_charge_allowed;
 } bms_soc_soh_temp_stat;
 
+typedef enum {
+	PID_RATE_25_HZ = 0,
+	PID_RATE_50_HZ,
+	PID_RATE_100_HZ,
+	PID_RATE_250_HZ,
+	PID_RATE_500_HZ,
+	PID_RATE_1000_HZ,
+	PID_RATE_2500_HZ,
+	PID_RATE_5000_HZ,
+	PID_RATE_10000_HZ,
+} PID_RATE;
+
+typedef enum {
+	MTPA_MODE_OFF = 0,
+	MTPA_MODE_IQ_TARGET,
+	MTPA_MODE_IQ_MEASURED
+} MTPA_MODE;
+
 typedef struct {
 	// Limits
 	float l_current_max;
@@ -396,6 +421,7 @@ typedef struct {
 	float foc_offsets_voltage_undriven[3];
 	bool foc_phase_filter_enable;
 	float foc_phase_filter_max_erpm;
+	MTPA_MODE foc_mtpa_mode;
 	// Field Weakening
 	float foc_fw_current_max;
 	float foc_fw_duty_start;
@@ -408,6 +434,8 @@ typedef struct {
 	float gpd_current_filter_const;
 	float gpd_current_kp;
 	float gpd_current_ki;
+
+	PID_RATE sp_pid_loop_rate;
 
 	// Speed PID
 	float s_pid_kp;
@@ -422,9 +450,11 @@ typedef struct {
 	float p_pid_kp;
 	float p_pid_ki;
 	float p_pid_kd;
+	float p_pid_kd_proc;
 	float p_pid_kd_filter;
 	float p_pid_ang_div;
 	float p_pid_gain_dec_angle;
+	float p_pid_offset;
 
 	// Current controller
 	float cc_startup_boost_duty;
@@ -487,6 +517,12 @@ typedef enum {
 	THR_EXP_POLY
 } thr_exp_mode;
 
+typedef enum {
+	SAFE_START_DISABLED = 0,
+	SAFE_START_REGULAR,
+	SAFE_START_NO_FAULT
+} SAFE_START_MODE;
+
 // PPM control types
 typedef enum {
 	PPM_CTRL_TYPE_NONE = 0,
@@ -509,7 +545,7 @@ typedef struct {
 	float pulse_end;
 	float pulse_center;
 	bool median_filter;
-	bool safe_start;
+	SAFE_START_MODE safe_start;
 	float throttle_exp;
 	float throttle_exp_brake;
 	thr_exp_mode throttle_exp_mode;
@@ -545,7 +581,8 @@ typedef enum {
 // PAS control types
 typedef enum {
 	PAS_CTRL_TYPE_NONE = 0,
-	PAS_CTRL_TYPE_CADENCE
+	PAS_CTRL_TYPE_CADENCE,
+	PAS_CTRL_TYPE_CONSTANT_TORQUE
 } pas_control_type;
 
 // PAS sensor types
@@ -562,7 +599,7 @@ typedef struct {
 	float voltage2_start;
 	float voltage2_end;
 	bool use_filter;
-	bool safe_start;
+	SAFE_START_MODE safe_start;
 	bool cc_button_inverted;
 	bool rev_button_inverted;
 	bool voltage_inverted;
@@ -691,13 +728,21 @@ typedef struct {
 	uint16_t fault_delay_switch_half;
 	uint16_t fault_delay_switch_full;
 	uint16_t fault_adc_half_erpm;
-	float tiltback_angle;
-	float tiltback_speed;
+	float tiltback_duty_angle;
+	float tiltback_duty_speed;
 	float tiltback_duty;
-	float tiltback_high_voltage;
-	float tiltback_low_voltage;
+	float tiltback_hv_angle;
+	float tiltback_hv_speed;
+	float tiltback_hv;
+	float tiltback_lv_angle;
+	float tiltback_lv_speed;
+	float tiltback_lv;
+	float tiltback_return_speed;
 	float tiltback_constant;
 	uint16_t tiltback_constant_erpm;
+	float tiltback_variable;
+	float tiltback_variable_max;
+	float noseangling_speed;
 	float startup_pitch_tolerance;
 	float startup_roll_tolerance;
 	float startup_speed;
@@ -767,7 +812,8 @@ typedef enum {
 
 typedef enum {
 	AHRS_MODE_MADGWICK = 0,
-	AHRS_MODE_MAHONY
+	AHRS_MODE_MAHONY,
+	AHRS_MODE_MADGWICK_FUSION
 } AHRS_MODE;
 
 typedef struct {
@@ -783,9 +829,20 @@ typedef struct {
 	float rot_yaw;
 	float accel_offsets[3];
 	float gyro_offsets[3];
-	float gyro_offset_comp_fact[3];
-	float gyro_offset_comp_clamp;
 } imu_config;
+
+typedef struct {
+	uint8_t is_connected;
+	uint8_t AGC_value;
+	uint16_t magnitude;
+	uint8_t is_OCF;
+	uint8_t is_COF;
+	uint8_t is_Comp_low;
+	uint8_t is_Comp_high;
+	uint16_t serial_diag_flgs;
+	uint16_t serial_magnitude;
+	uint16_t serial_error_flags;
+}AS504x_diag;
 
 typedef enum {
 	CAN_MODE_VESC = 0,
@@ -996,6 +1053,9 @@ typedef enum {
 	COMM_IO_BOARD_GET_ALL,
 	COMM_IO_BOARD_SET_PWM,
 	COMM_IO_BOARD_SET_DIGITAL,
+
+	COMM_BM_MEM_WRITE,
+	COMM_BALANCE_SELFTEST
 } COMM_PACKET_ID;
 
 // CAN commands
@@ -1055,7 +1115,9 @@ typedef enum {
 	CAN_PACKET_BMS_HW_DATA_5,
 	CAN_PACKET_BMS_AH_WH_CHG_TOTAL,
 	CAN_PACKET_BMS_AH_WH_DIS_TOTAL,
-	CAN_PACKET_MAKE_ENUM_32_BITS = 0xFFFFFFFF
+	CAN_PACKET_UPDATE_PID_POS_OFFSET,
+	CAN_PACKET_POLL_ROTOR_POS,
+	CAN_PACKET_MAKE_ENUM_32_BITS = 0xFFFFFFFF,
 } CAN_PACKET_ID;
 
 // Logged fault data
