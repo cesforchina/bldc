@@ -38,9 +38,6 @@
 #include "mempools.h"
 #include "shutdown.h"
 #include "bms.h"
-#ifdef USE_LISPBM
-#include "lispif.h"
-#endif
 
 // Settings
 #define RX_FRAMES_SIZE	100
@@ -48,8 +45,8 @@
 
 #if CAN_ENABLE
 // Threads
-static THD_WORKING_AREA(cancom_read_thread_wa, 256);
-static THD_WORKING_AREA(cancom_process_thread_wa, 2048);
+static THD_WORKING_AREA(cancom_read_thread_wa, 512);
+static THD_WORKING_AREA(cancom_process_thread_wa, 4096);
 static THD_WORKING_AREA(cancom_status_thread_wa, 512);
 static THD_FUNCTION(cancom_read_thread, arg);
 static THD_FUNCTION(cancom_status_thread, arg);
@@ -140,27 +137,7 @@ void comm_can_init(void) {
 			PAL_STM32_OTYPE_PUSHPULL |
 			PAL_STM32_OSPEED_MID1);
 
-#ifdef HW_CAN2_DEV
-	palSetPadMode(HW_CAN2_RX_PORT, HW_CAN2_RX_PIN,
-			PAL_MODE_ALTERNATE(HW_CAN2_GPIO_AF) |
-			PAL_STM32_OTYPE_PUSHPULL |
-			PAL_STM32_OSPEED_MID1);
-	palSetPadMode(HW_CAN2_TX_PORT, HW_CAN2_TX_PIN,
-			PAL_MODE_ALTERNATE(HW_CAN2_GPIO_AF) |
-			PAL_STM32_OTYPE_PUSHPULL |
-			PAL_STM32_OSPEED_MID1);
-
-	canStart(&CAND1, &cancfg);
-	canStart(&CAND2, &cancfg);
-#else
-	// CAND1 must be running for CAND2 to work
-	CANDriver *cand = &HW_CAN_DEV;
-	if (cand == &CAND2) {
-		canStart(&CAND1, &cancfg);
-	}
-
 	canStart(&HW_CAN_DEV, &cancfg);
-#endif
 
 	canard_driver_init();
 
@@ -243,18 +220,7 @@ void comm_can_transmit_eid_replace(uint32_t id, const uint8_t *data, uint8_t len
 	memcpy(txmsg.data8, data, len);
 
 	chMtxLock(&can_mtx);
-#ifdef HW_CAN2_DEV
-	for (int i = 0;i < 10;i++) {
-		msg_t ok = canTransmit(&HW_CAN_DEV, CAN_ANY_MAILBOX, &txmsg, TIME_IMMEDIATE);
-		msg_t ok2 = canTransmit(&HW_CAN2_DEV, CAN_ANY_MAILBOX, &txmsg, TIME_IMMEDIATE);
-		if (ok == MSG_OK || ok2 == MSG_OK) {
-			break;
-		}
-		chThdSleepMicroseconds(500);
-	}
-#else
 	canTransmit(&HW_CAN_DEV, CAN_ANY_MAILBOX, &txmsg, MS2ST(5));
-#endif
 	chMtxUnlock(&can_mtx);
 #else
 	(void)id;
@@ -286,18 +252,7 @@ void comm_can_transmit_sid(uint32_t id, uint8_t *data, uint8_t len) {
 	memcpy(txmsg.data8, data, len);
 
 	chMtxLock(&can_mtx);
-#ifdef HW_CAN2_DEV
-	for (int i = 0;i < 10;i++) {
-		msg_t ok = canTransmit(&HW_CAN_DEV, CAN_ANY_MAILBOX, &txmsg, TIME_IMMEDIATE);
-		msg_t ok2 = canTransmit(&HW_CAN2_DEV, CAN_ANY_MAILBOX, &txmsg, TIME_IMMEDIATE);
-		if (ok == MSG_OK || ok2 == MSG_OK) {
-			break;
-		}
-		chThdSleepMicroseconds(500);
-	}
-#else
 	canTransmit(&HW_CAN_DEV, CAN_ANY_MAILBOX, &txmsg, MS2ST(5));
-#endif
 	chMtxUnlock(&can_mtx);
 #else
 	(void)id;
@@ -1118,10 +1073,6 @@ static THD_FUNCTION(cancom_read_thread, arg) {
 	CANRxFrame rxmsg;
 
 	chEvtRegister(&HW_CAN_DEV.rxfull_event, &el, 0);
-#ifdef HW_CAN2_DEV
-	event_listener_t el2;
-	chEvtRegister(&HW_CAN2_DEV.rxfull_event, &el2, 0);
-#endif
 
 	while(!chThdShouldTerminateX()) {
 		// Feed watchdog
@@ -1145,29 +1096,9 @@ static THD_FUNCTION(cancom_read_thread, arg) {
 
 			result = canReceive(&HW_CAN_DEV, CAN_ANY_MAILBOX, &rxmsg, TIME_IMMEDIATE);
 		}
-
-#ifdef HW_CAN2_DEV
-		result = canReceive(&HW_CAN2_DEV, CAN_ANY_MAILBOX, &rxmsg, TIME_IMMEDIATE);
-
-		while (result == MSG_OK) {
-			chMtxLock(&can_rx_mtx);
-			rx_frames[rx_frame_write++] = rxmsg;
-			if (rx_frame_write == RX_FRAMES_SIZE) {
-				rx_frame_write = 0;
-			}
-			chMtxUnlock(&can_rx_mtx);
-
-			chEvtSignal(process_tp, (eventmask_t) 1);
-
-			result = canReceive(&HW_CAN2_DEV, CAN_ANY_MAILBOX, &rxmsg, TIME_IMMEDIATE);
-		}
-#endif
 	}
 
 	chEvtUnregister(&HW_CAN_DEV.rxfull_event, &el);
-#ifdef HW_CAN2_DEV
-	chEvtUnregister(&HW_CAN2_DEV.rxfull_event, &el2);
-#endif
 }
 
 static THD_FUNCTION(cancom_process_thread, arg) {
@@ -1215,9 +1146,6 @@ static THD_FUNCTION(cancom_process_thread, arg) {
 				if (!eid_cb_used) {
 					if (!bms_process_can_frame(rxmsg.EID, rxmsg.data8, rxmsg.DLC, true)) {
 						decode_msg(rxmsg.EID, rxmsg.data8, rxmsg.DLC, false);
-#ifdef USE_LISPBM
-						lispif_process_can(rxmsg.EID, rxmsg.data8, rxmsg.DLC, true);
-#endif
 					}
 				}
 			} else {
@@ -1227,14 +1155,8 @@ static THD_FUNCTION(cancom_process_thread, arg) {
 				}
 
 				if (!sid_cb_used) {
-					sid_cb_used = bms_process_can_frame(rxmsg.SID, rxmsg.data8, rxmsg.DLC, false);
+					bms_process_can_frame(rxmsg.SID, rxmsg.data8, rxmsg.DLC, false);
 				}
-
-#ifdef USE_LISPBM
-				if (!sid_cb_used) {
-					lispif_process_can(rxmsg.EID, rxmsg.data8, rxmsg.DLC, true);
-				}
-#endif
 			}
 		}
 	}
@@ -1901,13 +1823,6 @@ static void set_timing(int brp, int ts1, int ts2) {
 	cancfg.btr = CAN_BTR_SJW(3) | CAN_BTR_TS2(ts2) |
 		CAN_BTR_TS1(ts1) | CAN_BTR_BRP(brp);
 
-#ifdef HW_CAN2_DEV
-	canStop(&CAND1);
-	canStart(&CAND1, &cancfg);
-	canStop(&CAND2);
-	canStart(&CAND2, &cancfg);
-#else
 	canStop(&HW_CAN_DEV);
 	canStart(&HW_CAN_DEV, &cancfg);
-#endif
 }

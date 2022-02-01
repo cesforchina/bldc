@@ -127,12 +127,12 @@ void virtual_motor_set_configuration(volatile mc_configuration *conf){
 	virtual_motor.km = 1.5 * virtual_motor.pole_pairs;
 #ifdef HW_HAS_PHASE_SHUNTS
 	if (m_conf->foc_sample_v0_v7) {
-		virtual_motor.Ts = (1.0 / m_conf->foc_f_zv) ;
+		virtual_motor.Ts = (1.0 / m_conf->foc_f_sw) ;
 	} else {
-		virtual_motor.Ts = (1.0 / (m_conf->foc_f_zv / 2.0));
+		virtual_motor.Ts = (1.0 / (m_conf->foc_f_sw / 2.0));
 	}
 #else
-	virtual_motor.Ts = (1.0 / m_conf->foc_f_zv) ;
+	virtual_motor.Ts = (1.0 / m_conf->foc_f_sw) ;
 #endif
 
 	if(m_conf->foc_motor_ld_lq_diff > 0.0){

@@ -17,19 +17,11 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
     */
 
-#ifndef TERMINAL_H_
-#define TERMINAL_H_
+#ifndef APPCONF_APPCONF_EXAMPLE_PPM_H_
+#define APPCONF_APPCONF_EXAMPLE_PPM_H_
 
-#include "datatypes.h"
+// Override app configuration parameters such that the PPM app becomes default
+#define APPCONF_APP_TO_USE				APP_PPM
+#define APPCONF_PPM_CTRL_TYPE			PPM_CTRL_TYPE_CURRENT_NOREV_BRAKE
 
-// Functions
-void terminal_process_string(char *str);
-void terminal_add_fault_data(fault_data *data);
-void terminal_register_command_callback(
-		const char* command,
-		const char *help,
-		const char *arg_names,
-		void(*cbf)(int argc, const char **argv));
-void terminal_unregister_callback(void(*cbf)(int argc, const char **argv));
-
-#endif /* TERMINAL_H_ */
+#endif /* APPCONF_APPCONF_EXAMPLE_PPM_H_ */

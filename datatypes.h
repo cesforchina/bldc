@@ -86,9 +86,7 @@ typedef enum {
 	TEMP_SENSOR_PTC_1K_100C,
 	TEMP_SENSOR_KTY83_122,
 	TEMP_SENSOR_NTC_100K_25C,
-	TEMP_SENSOR_KTY84_130,
-	TEMP_SENSOR_NTCX,
-	TEMP_SENSOR_PTCX
+	TEMP_SENSOR_KTY84_130
 } temp_sensor_type;
 
 // General purpose drive output mode
@@ -370,7 +368,7 @@ typedef struct {
 	// FOC
 	float foc_current_kp;
 	float foc_current_ki;
-	float foc_f_zv;
+	float foc_f_sw;
 	float foc_dt_us;
 	float foc_encoder_offset;
 	bool foc_encoder_inverted;
@@ -386,7 +384,6 @@ typedef struct {
 	float foc_motor_flux_linkage;
 	float foc_observer_gain;
 	float foc_observer_gain_slow;
-	float foc_observer_offset;
 	float foc_pll_kp;
 	float foc_pll_ki;
 	float foc_duty_dowmramp_kp;
@@ -482,8 +479,6 @@ typedef struct {
 	temp_sensor_type m_motor_temp_sens_type;
 	float m_ptc_motor_coeff;
 	int m_hall_extra_samples;
-	float m_ntcx_ptcx_temp_base;
-	float m_ntcx_ptcx_res;
 	// Setup info
 	uint8_t si_motor_poles;
 	float si_gear_ratio;
@@ -491,7 +486,6 @@ typedef struct {
 	BATTERY_TYPE si_battery_type;
 	int si_battery_cells;
 	float si_battery_ah;
-	float si_motor_nl_current;
 
 	// BMS Configuration
 	bms_config bms;
@@ -588,8 +582,7 @@ typedef enum {
 typedef enum {
 	PAS_CTRL_TYPE_NONE = 0,
 	PAS_CTRL_TYPE_CADENCE,
-	PAS_CTRL_TYPE_TORQUE,
-	PAS_CTRL_TYPE_TORQUE_WITH_CADENCE_TIMEOUT
+	PAS_CTRL_TYPE_CONSTANT_TORQUE
 } pas_control_type;
 
 // PAS sensor types
@@ -860,8 +853,7 @@ typedef enum {
 typedef enum {
 	UAVCAN_RAW_MODE_CURRENT = 0,
 	UAVCAN_RAW_MODE_CURRENT_NO_REV_BRAKE,
-	UAVCAN_RAW_MODE_DUTY,
-	UAVCAN_RAW_MODE_RPM
+	UAVCAN_RAW_MODE_DUTY
 } UAVCAN_RAW_MODE;
 
 typedef enum {
@@ -890,7 +882,6 @@ typedef struct {
 	CAN_MODE can_mode;
 	uint8_t uavcan_esc_index;
 	UAVCAN_RAW_MODE uavcan_raw_mode;
-	float uavcan_raw_rpm_max;
 
 	// Application to use
 	app_use app_to_use;
@@ -1064,18 +1055,7 @@ typedef enum {
 	COMM_IO_BOARD_SET_DIGITAL,
 
 	COMM_BM_MEM_WRITE,
-	COMM_BMS_BLNC_SELFTEST,
-	COMM_GET_EXT_HUM_TMP,
-	COMM_GET_STATS,
-	COMM_RESET_STATS,
-
-	// Lisp
-	COMM_LISP_READ_CODE,
-	COMM_LISP_WRITE_CODE,
-	COMM_LISP_ERASE_CODE,
-	COMM_LISP_SET_RUNNING,
-	COMM_LISP_GET_STATS,
-	COMM_LISP_PRINT
+	COMM_BALANCE_SELFTEST
 } COMM_PACKET_ID;
 
 // CAN commands
@@ -1137,7 +1117,6 @@ typedef enum {
 	CAN_PACKET_BMS_AH_WH_DIS_TOTAL,
 	CAN_PACKET_UPDATE_PID_POS_OFFSET,
 	CAN_PACKET_POLL_ROTOR_POS,
-	CAN_PACKET_BMS_BOOT,
 	CAN_PACKET_MAKE_ENUM_32_BITS = 0xFFFFFFFF,
 } CAN_PACKET_ID;
 
@@ -1320,21 +1299,6 @@ typedef struct {
 	float current_in_tot;
 	uint8_t num_vescs;
 } setup_values;
-
-typedef struct {
-	systime_t time_start;
-	double samples;
-	double speed_sum;
-	float max_speed;
-	double power_sum;
-	float max_power;
-	double temp_motor_sum;
-	float max_temp_motor;
-	double temp_mos_sum;
-	float max_temp_mos;
-	double current_sum;
-	float max_current;
-} setup_stats;
 
 #define BACKUP_VAR_INIT_CODE				92891934
 

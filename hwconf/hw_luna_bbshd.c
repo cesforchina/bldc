@@ -1,5 +1,6 @@
 /*
-	Copyright 2012-2014 Benjamin Vedder	benjamin@vedder.se
+	Copyright 2020 Marcos Chaparro	mchaparro@powerdesigns.ca
+	Copyright 2018 Benjamin Vedder	benjamin@vedder.se
 
 	This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -13,30 +14,21 @@
 
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
-/*
- * hw_45.c
- *
- *  Created on: 19 okt 2014
- *      Author: benjamin
- */
+    */
 
 #include "hw.h"
 
 #include "ch.h"
 #include "hal.h"
 #include "stm32f4xx_conf.h"
-#include "commands.h"
-
-// Threads
-THD_FUNCTION(temp_thread, arg);
-static THD_WORKING_AREA(temp_thread_wa, 512);
-static bool temp_thread_running = false;
+#include "utils.h"
+#include <math.h>
+#include "mc_interface.h"
 
 // Variables
 static volatile bool i2c_running = false;
-static volatile float temp_now = 30.0;
+
+void hw_luna_bbshd_setup_dac(void);
 
 // I2C configuration
 static const I2CConfig i2cfg = {
@@ -50,23 +42,13 @@ void hw_init_gpio(void) {
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
 
 	// LEDs
-	palSetPadMode(GPIOC, 4,
+	palSetPadMode(LED_GREEN_GPIO, LED_GREEN_PIN,
 			PAL_MODE_OUTPUT_PUSHPULL |
 			PAL_STM32_OSPEED_HIGHEST);
-	palSetPadMode(GPIOA, 7,
-			PAL_MODE_OUTPUT_PUSHPULL |
-			PAL_STM32_OSPEED_HIGHEST);
-
-	// GPIOC (ENABLE_GATE)
-	palSetPadMode(GPIOC, 10,
-			PAL_MODE_OUTPUT_PUSHPULL |
-			PAL_STM32_OSPEED_HIGHEST);
-	DISABLE_GATE();
-
-	// GPIOB (DCCAL)
-	palSetPadMode(GPIOB, 12,
+	palSetPadMode(LED_RED_GPIO, LED_RED_PIN,
 			PAL_MODE_OUTPUT_PUSHPULL |
 			PAL_STM32_OSPEED_HIGHEST);
 
@@ -96,16 +78,34 @@ void hw_init_gpio(void) {
 	palSetPadMode(HW_HALL_ENC_GPIO2, HW_HALL_ENC_PIN2, PAL_MODE_INPUT_PULLUP);
 	palSetPadMode(HW_HALL_ENC_GPIO3, HW_HALL_ENC_PIN3, PAL_MODE_INPUT_PULLUP);
 
-	// Fault pin
-	palSetPadMode(GPIOC, 12, PAL_MODE_INPUT_PULLUP);
+#ifdef HW_USE_BRK
+	// BRK Fault pin
+	palSetPadMode(BRK_GPIO, BRK_PIN, PAL_MODE_ALTERNATE(GPIO_AF_TIM1));
+#endif
+
+	// Current filter
+	palSetPadMode(GPIOC, 13,
+			PAL_MODE_OUTPUT_PUSHPULL |
+			PAL_STM32_OSPEED_HIGHEST);
+
+	CURRENT_FILTER_OFF();
+
+	// AUX pin
+	AUX_OFF();
+	palSetPadMode(AUX_GPIO, AUX_PIN,
+			PAL_MODE_OUTPUT_PUSHPULL |
+			PAL_STM32_OSPEED_HIGHEST);
 
 	// ADC Pins
 	palSetPadMode(GPIOA, 0, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOA, 1, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOA, 2, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOA, 3, PAL_MODE_INPUT_ANALOG);
-	palSetPadMode(GPIOA, 4, PAL_MODE_INPUT_ANALOG);
+#ifdef HW_BBSHD_USE_DAC
+	hw_luna_bbshd_setup_dac();
+#else
 	palSetPadMode(GPIOA, 5, PAL_MODE_INPUT_ANALOG);
+#endif
 	palSetPadMode(GPIOA, 6, PAL_MODE_INPUT_ANALOG);
 
 	palSetPadMode(GPIOB, 0, PAL_MODE_INPUT_ANALOG);
@@ -115,39 +115,45 @@ void hw_init_gpio(void) {
 	palSetPadMode(GPIOC, 1, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOC, 2, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOC, 3, PAL_MODE_INPUT_ANALOG);
+	palSetPadMode(GPIOC, 4, PAL_MODE_INPUT_ANALOG);
 	palSetPadMode(GPIOC, 5, PAL_MODE_INPUT_ANALOG);
 }
 
 void hw_setup_adc_channels(void) {
 	// ADC1 regular channels
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_0, 1, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_5, 2, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_Vrefint, 3, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_13, 4, ADC_SampleTime_15Cycles);
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_0,  1, ADC_SampleTime_15Cycles);	// 0	SENS1
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_10, 2, ADC_SampleTime_15Cycles);	// 3	CURR1
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_8,  3, ADC_SampleTime_15Cycles);	// 6	ADC_IND_EXT2
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_14, 4, ADC_SampleTime_15Cycles); // 9	TEMP_MOTOR
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_9,  5, ADC_SampleTime_15Cycles);	// 12	V_GATE_DRIVER
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_5,  6, ADC_SampleTime_15Cycles);	// 15	TEMP_FET
 
 	// ADC2 regular channels
-	ADC_RegularChannelConfig(ADC2, ADC_Channel_1, 1, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC2, ADC_Channel_6, 2, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC2, ADC_Channel_11, 3, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC2, ADC_Channel_15, 4, ADC_SampleTime_15Cycles);
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_1,  1, ADC_SampleTime_15Cycles);	// 1	SENS2
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_11, 2, ADC_SampleTime_15Cycles);	// 4	CURR2
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_6,  3, ADC_SampleTime_15Cycles);	// 7	UNUSED
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_15, 4, ADC_SampleTime_15Cycles);	// 10	ADC_IND_EXT
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_7,  5, ADC_SampleTime_15Cycles);	// 13	ADC_IND_EXT3
+	ADC_RegularChannelConfig(ADC2, ADC_Channel_Vrefint, 6, ADC_SampleTime_15Cycles);// 16	ADC_IND_VREFINT
 
 	// ADC3 regular channels
-	ADC_RegularChannelConfig(ADC3, ADC_Channel_2, 1, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC3, ADC_Channel_3, 2, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC3, ADC_Channel_12, 3, ADC_SampleTime_15Cycles);
-	ADC_RegularChannelConfig(ADC3, ADC_Channel_10, 4, ADC_SampleTime_15Cycles);
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_2,  1, ADC_SampleTime_15Cycles);	// 2	SENS3
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_12, 2, ADC_SampleTime_15Cycles);	// 5	CURR3
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_3,  3, ADC_SampleTime_15Cycles);	// 8	PCB_TEMP
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_13, 4, ADC_SampleTime_15Cycles);	// 11	VBUS
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_1,  5, ADC_SampleTime_15Cycles);	// 14	UNUSED
+	ADC_RegularChannelConfig(ADC3, ADC_Channel_Vrefint, 6, ADC_SampleTime_15Cycles);// 18	UNUSED
 
 	// Injected channels
-	ADC_InjectedChannelConfig(ADC1, ADC_Channel_6, 1, ADC_SampleTime_15Cycles);
-	ADC_InjectedChannelConfig(ADC2, ADC_Channel_5, 1, ADC_SampleTime_15Cycles);
-	ADC_InjectedChannelConfig(ADC1, ADC_Channel_5, 2, ADC_SampleTime_15Cycles);
-	ADC_InjectedChannelConfig(ADC2, ADC_Channel_6, 2, ADC_SampleTime_15Cycles);
-
-	// Setup i2c temperature sensor here
-	if (!temp_thread_running) {
-		chThdCreateStatic(temp_thread_wa, sizeof(temp_thread_wa), NORMALPRIO, temp_thread, NULL);
-		temp_thread_running = true;
-	}
+	ADC_InjectedChannelConfig(ADC1, ADC_Channel_10, 1, ADC_SampleTime_15Cycles);
+	ADC_InjectedChannelConfig(ADC2, ADC_Channel_11, 1, ADC_SampleTime_15Cycles);
+	ADC_InjectedChannelConfig(ADC3, ADC_Channel_12, 1, ADC_SampleTime_15Cycles);
+	ADC_InjectedChannelConfig(ADC1, ADC_Channel_10, 2, ADC_SampleTime_15Cycles);
+	ADC_InjectedChannelConfig(ADC2, ADC_Channel_11, 2, ADC_SampleTime_15Cycles);
+	ADC_InjectedChannelConfig(ADC3, ADC_Channel_12, 2, ADC_SampleTime_15Cycles);
+	ADC_InjectedChannelConfig(ADC1, ADC_Channel_10, 3, ADC_SampleTime_15Cycles);
+	ADC_InjectedChannelConfig(ADC2, ADC_Channel_11, 3, ADC_SampleTime_15Cycles);
+	ADC_InjectedChannelConfig(ADC3, ADC_Channel_12, 3, ADC_SampleTime_15Cycles);
 }
 
 void hw_start_i2c(void) {
@@ -244,42 +250,29 @@ void hw_try_restore_i2c(void) {
 	}
 }
 
-THD_FUNCTION(temp_thread, arg) {
-	(void)arg;
+void hw_luna_bbshd_setup_dac(void) {
+	// GPIOA clock enable
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
 
-	chRegSetThreadName("I2C Temp samp");
+	// DAC Periph clock enable
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_DAC, ENABLE);
 
-	uint8_t rxbuf[10];
-	uint8_t txbuf[10];
-	msg_t status = MSG_OK;
-	systime_t tmo = MS2ST(5);
-	i2caddr_t temp_addr = 0x48;
+	// DAC channel 1 & 2 (DAC_OUT1 = PA.4)(DAC_OUT2 = PA.5) configuration
+	palSetPadMode(GPIOA, 4, PAL_MODE_INPUT_ANALOG);
+	palSetPadMode(GPIOA, 5, PAL_MODE_INPUT_ANALOG);
 
-	hw_start_i2c();
-	chThdSleepMilliseconds(10);
+	// Enable both DAC channels with output buffer disabled to achieve rail-to-rail output
+	DAC->CR |= DAC_CR_EN1 | DAC_CR_BOFF1 | DAC_CR_EN2 | DAC_CR_BOFF2;
 
-	for(;;) {
-		if (i2c_running) {
-			txbuf[0] = 0x00;
-			i2cAcquireBus(&HW_I2C_DEV);
-			status = i2cMasterTransmitTimeout(&HW_I2C_DEV, temp_addr, txbuf, 1, rxbuf, 2, tmo);
-			i2cReleaseBus(&HW_I2C_DEV);
-
-			if (status == MSG_OK){
-				int16_t tempi = rxbuf[0] << 8 | rxbuf[1];
-				float temp = (float)tempi;
-				temp /= 128;
-
-				temp_now = temp;
-			} else {
-				hw_try_restore_i2c();
-			}
-		}
-
-		chThdSleepMilliseconds(100);
-	}
+	// Set DAC channels at 1.65V
+	hw_luna_bbshd_DAC1_setdata(0x800);
+	hw_luna_bbshd_DAC2_setdata(0x800);
 }
 
-float hw45_get_temp(void) {
-	return temp_now;
+void hw_luna_bbshd_DAC1_setdata(uint16_t data) {
+	DAC->DHR12R1 = data;
+}
+
+void hw_luna_bbshd_DAC2_setdata(uint16_t data) {
+	DAC->DHR12R2 = data;
 }

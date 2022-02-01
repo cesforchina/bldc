@@ -54,7 +54,6 @@ volatile float ADC_curr_norm_value[6];
 typedef struct {
 	volatile mc_configuration m_conf;
 	mc_fault_code m_fault_now;
-	setup_stats m_stats;
 	int m_ignore_iterations;
 	int m_drv_fault_iterations;
 	unsigned int m_cycles_running;
@@ -125,14 +124,13 @@ static volatile bool m_fault_stop_is_second_motor;
 // Private functions
 static void update_override_limits(volatile motor_if_state_t *motor, volatile mc_configuration *conf);
 static void run_timer_tasks(volatile motor_if_state_t *motor);
-static void update_stats(volatile motor_if_state_t *motor);
 static volatile motor_if_state_t *motor_now(void);
 
 // Function pointers
 static void(*pwn_done_func)(void) = 0;
 
 // Threads
-static THD_WORKING_AREA(timer_thread_wa, 512);
+static THD_WORKING_AREA(timer_thread_wa, 1024);
 static THD_FUNCTION(timer_thread, arg);
 static THD_WORKING_AREA(sample_send_thread_wa, 512);
 static THD_FUNCTION(sample_send_thread, arg);
@@ -140,59 +138,6 @@ static thread_t *sample_send_tp;
 static THD_WORKING_AREA(fault_stop_thread_wa, 512);
 static THD_FUNCTION(fault_stop_thread, arg);
 static thread_t *fault_stop_tp;
-static THD_WORKING_AREA(stat_thread_wa, 512);
-static THD_FUNCTION(stat_thread, arg);
-
-static void init_sensor_port(volatile mc_configuration *conf) {
-	switch (conf->m_sensor_port_mode) {
-	case SENSOR_PORT_MODE_ABI:
-		SENSOR_PORT_5V();
-		encoder_init_abi(conf->m_encoder_counts);
-		break;
-
-	case SENSOR_PORT_MODE_AS5047_SPI:
-		SENSOR_PORT_3V3();
-		encoder_init_as5047p_spi();
-		break;
-
-	case SENSOR_PORT_MODE_MT6816_SPI:
-		SENSOR_PORT_5V();
-		encoder_init_mt6816_spi();
-		break;
-
-	case SENSOR_PORT_MODE_AD2S1205:
-		SENSOR_PORT_5V();
-		encoder_init_ad2s1205_spi();
-		break;
-
-	case SENSOR_PORT_MODE_SINCOS:
-		SENSOR_PORT_5V();
-		encoder_init_sincos(conf->foc_encoder_sin_gain, conf->foc_encoder_sin_offset,
-				conf->foc_encoder_cos_gain, conf->foc_encoder_cos_offset,
-				conf->foc_encoder_sincos_filter_constant);
-		break;
-
-	case SENSOR_PORT_MODE_TS5700N8501:
-	case SENSOR_PORT_MODE_TS5700N8501_MULTITURN: {
-		SENSOR_PORT_5V();
-		app_configuration *appconf = mempools_alloc_appconf();
-		conf_general_read_app_configuration(appconf);
-		if (appconf->app_to_use == APP_ADC ||
-				appconf->app_to_use == APP_UART ||
-				appconf->app_to_use == APP_PPM_UART ||
-				appconf->app_to_use == APP_ADC_UART) {
-			appconf->app_to_use = APP_NONE;
-			conf_general_store_app_configuration(appconf);
-		}
-		mempools_free_appconf(appconf);
-		encoder_init_ts5700n8501();
-	} break;
-
-	default:
-		SENSOR_PORT_5V();
-		break;
-	}
-}
 
 void mc_interface_init(void) {
 	memset((void*)&m_motor_1, 0, sizeof(motor_if_state_t));
@@ -220,13 +165,10 @@ void mc_interface_init(void) {
 	m_sample_mode_last = DEBUG_SAMPLING_OFF;
 	m_sample_is_second_motor = false;
 
-	mc_interface_stat_reset();
-
 	// Start threads
 	chThdCreateStatic(timer_thread_wa, sizeof(timer_thread_wa), NORMALPRIO, timer_thread, NULL);
 	chThdCreateStatic(sample_send_thread_wa, sizeof(sample_send_thread_wa), NORMALPRIO - 1, sample_send_thread, NULL);
 	chThdCreateStatic(fault_stop_thread_wa, sizeof(fault_stop_thread_wa), HIGHPRIO - 3, fault_stop_thread, NULL);
-	chThdCreateStatic(stat_thread_wa, sizeof(stat_thread_wa), NORMALPRIO, stat_thread, NULL);
 
 	int motor_old = mc_interface_get_motor_thread();
 	mc_interface_select_motor_thread(1);
@@ -258,7 +200,48 @@ void mc_interface_init(void) {
 #endif
 	mc_interface_select_motor_thread(motor_old);
 
-	init_sensor_port(&motor_now()->m_conf);
+	// Initialize encoder
+	switch (motor_now()->m_conf.m_sensor_port_mode) {
+	case SENSOR_PORT_MODE_ABI:
+		encoder_init_abi(motor_now()->m_conf.m_encoder_counts);
+		break;
+
+	case SENSOR_PORT_MODE_AS5047_SPI:
+		encoder_init_as5047p_spi();
+		break;
+
+	case SENSOR_PORT_MODE_MT6816_SPI:
+		encoder_init_mt6816_spi();
+		break;
+
+	case SENSOR_PORT_MODE_AD2S1205:
+		encoder_init_ad2s1205_spi();
+		break;
+
+	case SENSOR_PORT_MODE_SINCOS:
+		encoder_init_sincos(motor_now()->m_conf.foc_encoder_sin_gain, motor_now()->m_conf.foc_encoder_sin_offset,
+							motor_now()->m_conf.foc_encoder_cos_gain, motor_now()->m_conf.foc_encoder_cos_offset,
+							motor_now()->m_conf.foc_encoder_sincos_filter_constant);
+		break;
+
+	case SENSOR_PORT_MODE_TS5700N8501:
+	case SENSOR_PORT_MODE_TS5700N8501_MULTITURN: {
+		app_configuration *appconf = mempools_alloc_appconf();
+		conf_general_read_app_configuration(appconf);
+		if (appconf->app_to_use == APP_ADC ||
+				appconf->app_to_use == APP_UART ||
+				appconf->app_to_use == APP_PPM_UART ||
+				appconf->app_to_use == APP_ADC_UART) {
+			appconf->app_to_use = APP_NONE;
+			conf_general_store_app_configuration(appconf);
+		}
+		mempools_free_appconf(appconf);
+		encoder_init_ts5700n8501();
+	} break;
+
+	default:
+		break;
+	}
 
 	// Initialize selected implementation
 	switch (motor_now()->m_conf.motor_type) {
@@ -348,7 +331,48 @@ void mc_interface_set_configuration(mc_configuration *configuration) {
 
 	if (motor->m_conf.m_sensor_port_mode != configuration->m_sensor_port_mode) {
 		encoder_deinit();
-		init_sensor_port(configuration);
+		switch (configuration->m_sensor_port_mode) {
+		case SENSOR_PORT_MODE_ABI:
+			encoder_init_abi(configuration->m_encoder_counts);
+			break;
+
+		case SENSOR_PORT_MODE_AS5047_SPI:
+			encoder_init_as5047p_spi();
+			break;
+
+		case SENSOR_PORT_MODE_MT6816_SPI:
+			encoder_init_mt6816_spi();
+			break;
+
+		case SENSOR_PORT_MODE_AD2S1205:
+			encoder_init_ad2s1205_spi();
+			break;
+
+		case SENSOR_PORT_MODE_SINCOS:
+			encoder_init_sincos(motor->m_conf.foc_encoder_sin_gain, motor->m_conf.foc_encoder_sin_offset,
+								motor->m_conf.foc_encoder_cos_gain, motor->m_conf.foc_encoder_cos_offset,
+								motor->m_conf.foc_encoder_sincos_filter_constant);
+			break;
+
+		case SENSOR_PORT_MODE_TS5700N8501:
+		case SENSOR_PORT_MODE_TS5700N8501_MULTITURN: {
+			app_configuration *appconf = mempools_alloc_appconf();
+			*appconf = *app_get_configuration();
+			if (appconf->app_to_use == APP_ADC ||
+					appconf->app_to_use == APP_UART ||
+					appconf->app_to_use == APP_PPM_UART ||
+					appconf->app_to_use == APP_ADC_UART) {
+				appconf->app_to_use = APP_NONE;
+				conf_general_store_app_configuration(appconf);
+				app_set_configuration(appconf);
+			}
+			mempools_free_appconf(appconf);
+			encoder_init_ts5700n8501();
+		} break;
+
+		default:
+			break;
+		}
 	}
 
 	if (configuration->m_sensor_port_mode == SENSOR_PORT_MODE_ABI) {
@@ -424,9 +448,9 @@ void mc_interface_set_configuration(mc_configuration *configuration) {
 	case MOTOR_TYPE_FOC:
 #ifdef HW_HAS_DUAL_MOTORS
 		if (motor == &m_motor_1) {
-			m_motor_2.m_conf.foc_f_zv = motor->m_conf.foc_f_zv;
+			m_motor_2.m_conf.foc_f_sw = motor->m_conf.foc_f_sw;
 		} else {
-			m_motor_1.m_conf.foc_f_zv = motor->m_conf.foc_f_zv;
+			m_motor_1.m_conf.foc_f_sw = motor->m_conf.foc_f_sw;
 		}
 #endif
 		mcpwm_foc_set_configuration(&motor->m_conf);
@@ -641,22 +665,13 @@ void mc_interface_set_pid_pos(float pos) {
 		return;
 	}
 
-	volatile mc_configuration *conf = &motor_now()->m_conf;
-
 	motor_now()->m_position_set = pos;
 
 	pos += motor_now()->m_conf.p_pid_offset;
 	pos *= DIR_MULT;
-
-	if (encoder_is_configured()) {
-		if (conf->foc_encoder_inverted) {
-			pos *= -1.0;
-		}
-	}
-
 	utils_norm_angle(&pos);
 
-	switch (conf->motor_type) {
+	switch (motor_now()->m_conf.motor_type) {
 	case MOTOR_TYPE_BLDC:
 	case MOTOR_TYPE_DC:
 		mcpwm_set_pid_pos(pos);
@@ -815,35 +830,18 @@ void mc_interface_brake_now(void) {
  * Disconnect the motor and let it turn freely.
  */
 void mc_interface_release_motor(void) {
-	if (mc_interface_try_input()) {
-		return;
-	}
-
-	switch (motor_now()->m_conf.motor_type) {
-	case MOTOR_TYPE_BLDC:
-	case MOTOR_TYPE_DC:
-		mcpwm_release_motor();
-		break;
-
-	case MOTOR_TYPE_FOC:
-		mcpwm_foc_release_motor();
-		break;
-
-	default:
-		break;
-	}
-
-	events_add("release_motor", 0.0);}
+	mc_interface_set_current(0.0);
+}
 
 void mc_interface_release_motor_override(void) {
 	switch (motor_now()->m_conf.motor_type) {
 	case MOTOR_TYPE_BLDC:
 	case MOTOR_TYPE_DC:
-		mcpwm_release_motor();
+		mcpwm_set_current(0.0);
 		break;
 
 	case MOTOR_TYPE_FOC:
-		mcpwm_foc_release_motor();
+		mcpwm_foc_set_current(0.0);
 		break;
 
 	default:
@@ -1359,9 +1357,7 @@ float mc_interface_get_pid_pos_set(void) {
 float mc_interface_get_pid_pos_now(void) {
 	float ret = 0.0;
 
-	volatile mc_configuration *conf = &motor_now()->m_conf;
-
-	switch (conf->motor_type) {
+	switch (motor_now()->m_conf.motor_type) {
 	case MOTOR_TYPE_BLDC:
 	case MOTOR_TYPE_DC:
 		ret = encoder_read_deg();
@@ -1373,12 +1369,6 @@ float mc_interface_get_pid_pos_now(void) {
 
 	default:
 		break;
-	}
-
-	if (encoder_is_configured()) {
-		if (conf->foc_encoder_inverted) {
-			ret *= -1.0;
-		}
 	}
 
 	ret *= DIR_MULT;
@@ -1737,33 +1727,17 @@ void mc_interface_mc_timer_isr(bool is_second_motor) {
 	UTILS_LP_FAST(motor->m_input_voltage_filtered, input_voltage, 0.02);
 
 	// Check for faults that should stop the motor
+	static int wrong_voltage_iterations = 0;
+	if (input_voltage < conf_now->l_min_vin ||
+			input_voltage > conf_now->l_max_vin) {
+		wrong_voltage_iterations++;
 
-	static float wrong_voltage_integrator = 0.0;
-	float voltage_diff_now = 0.0;
-
-	if (input_voltage < conf_now->l_min_vin) {
-		voltage_diff_now = conf_now->l_min_vin - input_voltage;
-	} else if (input_voltage > conf_now->l_max_vin) {
-		voltage_diff_now = input_voltage - conf_now->l_max_vin;
-	}
-
-	if (voltage_diff_now > 1.0e-3) {
-		wrong_voltage_integrator += voltage_diff_now;
-
-		const float max_voltage = (conf_now->l_max_vin * 0.05);
-		if (wrong_voltage_integrator > max_voltage) {
+		if ((wrong_voltage_iterations >= 8)) {
 			mc_interface_fault_stop(input_voltage < conf_now->l_min_vin ?
 					FAULT_CODE_UNDER_VOLTAGE : FAULT_CODE_OVER_VOLTAGE, is_second_motor, true);
-
-			// Windup protection
-			wrong_voltage_integrator = max_voltage * 2.0;
 		}
 	} else {
-		if (wrong_voltage_integrator > 1.0) {
-			wrong_voltage_integrator -= 1.0;
-		} else {
-			wrong_voltage_integrator = 0.0;
-		}
+		wrong_voltage_iterations = 0;
 	}
 
 	// Fetch these values in a config-specific way to avoid some overhead of the general
@@ -2109,16 +2083,6 @@ static void update_override_limits(volatile motor_if_state_t *motor, volatile mc
 		temp_motor = -7.82531699e-12 * res * res * res * res + 6.34445902e-8 * res * res * res -
 				0.00020119157  * res * res + 0.407683016 * res - 161.357536;
 	} break;
-
-	case TEMP_SENSOR_NTCX:
-		temp_motor = is_motor_1 ? NTCX_TEMP_MOTOR(conf->m_ntcx_ptcx_res, conf->m_ntc_motor_beta, conf->m_ntcx_ptcx_temp_base) :
-				NTCX_TEMP_MOTOR_2(conf->m_ntcx_ptcx_res, conf->m_ntc_motor_beta, conf->m_ntcx_ptcx_temp_base);
-		break;
-
-	case TEMP_SENSOR_PTCX:
-		temp_motor = is_motor_1 ? PTC_TEMP_MOTOR(conf->m_ntcx_ptcx_res, conf->m_ptc_motor_coeff, conf->m_ntcx_ptcx_temp_base) :
-				PTC_TEMP_MOTOR_2(conf->m_ntcx_ptcx_res, conf->m_ptc_motor_coeff, conf->m_ntcx_ptcx_temp_base);
-		break;
 	}
 
 	// If the reading is messed up (by e.g. reading 0 on the ADC and dividing by 0) we avoid putting an
@@ -2555,121 +2519,6 @@ static THD_FUNCTION(timer_thread, arg) {
 #endif
 
 		chThdSleepMilliseconds(1);
-	}
-}
-
-static void update_stats(volatile motor_if_state_t *motor) {
-	mc_interface_select_motor_thread(motor == (&m_motor_1) ? 1 : 2);
-
-	setup_values val = mc_interface_get_setup_values();
-
-	const double power = mc_interface_get_input_voltage_filtered() * fabsf(val.current_in_tot);
-	const double speed = mc_interface_get_speed();
-	const double temp_mos = mc_interface_temp_fet_filtered();
-	const double temp_mot = mc_interface_temp_motor_filtered();
-
-	motor->m_stats.power_sum += power;
-	motor->m_stats.speed_sum += fabs(speed);
-	motor->m_stats.temp_mos_sum += temp_mos;
-	motor->m_stats.temp_motor_sum += temp_mot;
-	motor->m_stats.current_sum += fabs((double)(val.current_tot));
-	motor->m_stats.samples += (double)1.0;
-
-	if (power > (double)motor->m_stats.max_power) {
-		motor->m_stats.max_power = power;
-	}
-
-	if (fabs(speed) > (double)motor->m_stats.max_speed) {
-		motor->m_stats.max_speed = fabsf(speed);
-	}
-
-	if (temp_mos > (double)motor->m_stats.max_temp_mos) {
-		motor->m_stats.max_temp_mos = temp_mos;
-	}
-
-	if (temp_mot > (double)motor->m_stats.max_temp_motor) {
-		motor->m_stats.max_temp_motor = temp_mot;
-	}
-
-	if (fabsf(val.current_tot) > motor->m_stats.max_current) {
-		motor->m_stats.max_current = fabsf(val.current_tot);
-	}
-}
-
-float mc_interface_stat_speed_avg(void) {
-	volatile setup_stats *s = &motor_now()->m_stats;
-	double res = s->speed_sum / s->samples;
-	return res;
-}
-
-float mc_interface_stat_speed_max(void) {
-	return motor_now()->m_stats.max_speed;
-}
-
-float mc_interface_stat_power_avg(void) {
-	volatile setup_stats *s = &motor_now()->m_stats;
-	double res = s->power_sum / s->samples;
-	return res;
-}
-
-float mc_interface_stat_power_max(void) {
-	return motor_now()->m_stats.max_power;
-}
-
-float mc_interface_stat_current_avg(void) {
-	volatile setup_stats *s = &motor_now()->m_stats;
-	double res = s->current_sum / s->samples;
-	return res;
-}
-
-float mc_interface_stat_current_max(void) {
-	return motor_now()->m_stats.max_current;
-}
-
-float mc_interface_stat_temp_mosfet_avg(void) {
-	volatile setup_stats *s = &motor_now()->m_stats;
-	double res = s->temp_mos_sum / s->samples;
-	return res;
-}
-
-float mc_interface_stat_temp_mosfet_max(void) {
-	return motor_now()->m_stats.max_temp_mos;
-}
-
-float mc_interface_stat_temp_motor_avg(void) {
-	volatile setup_stats *s = &motor_now()->m_stats;
-	double res = s->temp_motor_sum / s->samples;
-	return res;
-}
-
-float mc_interface_stat_temp_motor_max(void) {
-	return motor_now()->m_stats.max_temp_motor;
-}
-
-float mc_interface_stat_count_time(void) {
-	return UTILS_AGE_S(motor_now()->m_stats.time_start);
-}
-
-void mc_interface_stat_reset(void) {
-	volatile setup_stats *s = &motor_now()->m_stats;
-	memset((void*)s, 0, sizeof(setup_stats));
-	s->time_start = chVTGetSystemTimeX();
-	s->max_temp_mos = -300.0;
-	s->max_temp_motor = -300.0;
-}
-
-static THD_FUNCTION(stat_thread, arg) {
-	(void)arg;
-
-	chRegSetThreadName("StatCounter");
-
-	for(;;) {
-		update_stats(&m_motor_1);
-#ifdef HW_HAS_DUAL_MOTORS
-		update_stats(&m_motor_2);
-#endif
-
-		chThdSleepMilliseconds(10);
 	}
 }
 

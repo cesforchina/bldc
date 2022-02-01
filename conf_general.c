@@ -1075,17 +1075,8 @@ bool conf_general_measure_flux_linkage_openloop(float current, float duty,
 		mcconf->foc_motor_flux_linkage = *linkage;
 		mcconf->foc_observer_gain = 0.5e3 / SQ(*linkage);
 		mc_interface_set_configuration(mcconf);
-
-		// Give the observer time to settle
 		chThdSleepMilliseconds(500);
-
-		// Turn off the FETs
-		mcpwm_foc_stop_pwm(false);
-
-		// Clear any lingering current set points
 		mcpwm_foc_set_current(0.0);
-
-		// Let the H-bridges settle
 		chThdSleepMilliseconds(5);
 
 		float linkage_sum = 0.0;
@@ -1305,7 +1296,7 @@ void conf_general_calc_apply_foc_cc_kp_ki_gain(mc_configuration *mcconf, float t
 }
 
 static bool measure_r_l_imax(float current_min, float current_max,
-		float max_power_loss, float *r, float *l, float *ld_lq_diff, float *i_max) {
+		float max_power_loss, float *r, float *l, float *i_max) {
 	float current_start = current_max / 50;
 	if (current_start < (current_min * 1.1)) {
 		current_start = current_min * 1.1;
@@ -1336,8 +1327,7 @@ static bool measure_r_l_imax(float current_min, float current_max,
 	mcconf->foc_motor_r = *r;
 	mc_interface_set_configuration(mcconf);
 
-	*l = mcpwm_foc_measure_inductance_current(i_last, 100, 0, ld_lq_diff) * 1e-6;
-	*ld_lq_diff *= 1e-6;
+	*l = mcpwm_foc_measure_inductance_current(i_last, 100, 0, 0) * 1e-6;
 	*i_max = sqrtf(max_power_loss / *r / 1.5);
 	utils_truncate_number(i_max, HW_LIM_CURRENT);
 
@@ -1406,7 +1396,6 @@ typedef struct {
 	float max_power_loss;
 	float r;
 	float l;
-	float ld_lq_diff;
 	float i_max;
 	bool res;
 	int motor;
@@ -1419,7 +1408,7 @@ static void measure_r_l_imax_task(void *arg) {
 			args->current_min,
 			args->current_max,
 			args->max_power_loss,
-			&args->r, &args->l, &args->ld_lq_diff, &args->i_max);
+			&args->r, &args->l, &args->i_max);
 }
 
 typedef struct {
@@ -1507,16 +1496,14 @@ int conf_general_detect_apply_all_foc(float max_power_loss,
 
 #ifdef HW_HAS_DUAL_MOTORS
 	mc_interface_select_motor_thread(2);
-	mc_configuration *mcconf_second = mempools_alloc_mcconf();
 	mc_configuration *mcconf_old_second = mempools_alloc_mcconf();
-	*mcconf_second = *mc_interface_get_configuration();
-	*mcconf_old_second = *mcconf_second;
+	*mcconf_old_second = *mc_interface_get_configuration();
 	mc_interface_select_motor_thread(1);
 #endif
 
 	mcconf->motor_type = MOTOR_TYPE_FOC;
 	mcconf->foc_sensor_mode = FOC_SENSOR_MODE_SENSORLESS;
-	mcconf->foc_f_zv = 10000.0; // Lower f_zv => less dead-time distortion
+	mcconf->foc_f_sw = 10000.0; // Lower f_sw => less dead-time distortion
 	mcconf->foc_current_kp = 0.0005;
 	mcconf->foc_current_ki = 1.0;
 	mcconf->l_current_max = MCCONF_L_CURRENT_MAX;
@@ -1530,22 +1517,8 @@ int conf_general_detect_apply_all_foc(float max_power_loss,
 	mc_interface_set_configuration(mcconf);
 
 #ifdef HW_HAS_DUAL_MOTORS
-	mcconf_second->motor_type = MOTOR_TYPE_FOC;
-	mcconf_second->foc_sensor_mode = FOC_SENSOR_MODE_SENSORLESS;
-	mcconf_second->foc_f_zv = 10000.0; // Lower f_zv => less dead-time distortion
-	mcconf_second->foc_current_kp = 0.0005;
-	mcconf_second->foc_current_ki = 1.0;
-	mcconf_second->l_current_max = MCCONF_L_CURRENT_MAX;
-	mcconf_second->l_current_min = MCCONF_L_CURRENT_MIN;
-	mcconf_second->l_current_max_scale = MCCONF_L_CURRENT_MAX_SCALE;
-	mcconf_second->l_current_min_scale = MCCONF_L_CURRENT_MIN_SCALE;
-	mcconf_second->l_watt_max = MCCONF_L_WATT_MAX;
-	mcconf_second->l_watt_min = MCCONF_L_WATT_MIN;
-	mcconf_second->l_max_erpm = MCCONF_L_RPM_MAX;
-	mcconf_second->l_min_erpm = MCCONF_L_RPM_MIN;
-
 	mc_interface_select_motor_thread(2);
-	mc_interface_set_configuration(mcconf_second);
+	mc_interface_set_configuration(mcconf);
 	mc_interface_select_motor_thread(1);
 #endif
 
@@ -1558,7 +1531,6 @@ int conf_general_detect_apply_all_foc(float max_power_loss,
 		mc_interface_select_motor_thread(2);
 		mc_interface_set_configuration(mcconf_old_second);
 		mc_interface_select_motor_thread(1);
-		mempools_free_mcconf(mcconf_second);
 		mempools_free_mcconf(mcconf_old_second);
 #endif
 		mc_interface_select_motor_thread(motor_last);
@@ -1595,10 +1567,9 @@ int conf_general_detect_apply_all_foc(float max_power_loss,
 
 	float r = 0.0;
 	float l = 0.0;
-	float ld_lq_diff;
 	float i_max = 0.0;
 	bool res_r_l_imax_m1 = measure_r_l_imax(mcconf->cc_min_current,
-			mcconf->l_current_max, max_power_loss, &r, &l, &ld_lq_diff, &i_max);
+			mcconf->l_current_max, max_power_loss, &r, &l, &i_max);
 
 #ifdef HW_HAS_DUAL_MOTORS
 	worker_wait();
@@ -1619,7 +1590,6 @@ int conf_general_detect_apply_all_foc(float max_power_loss,
 		mc_interface_select_motor_thread(2);
 		mc_interface_set_configuration(mcconf_old_second);
 		mc_interface_select_motor_thread(1);
-		mempools_free_mcconf(mcconf_second);
 		mempools_free_mcconf(mcconf_old_second);
 #endif
 		mc_interface_select_motor_thread(motor_last);
@@ -1629,13 +1599,12 @@ int conf_general_detect_apply_all_foc(float max_power_loss,
 	// Increase switching frequency for flux linkage measurement
 	// as dead-time distortion has less effect at higher modulation.
 	// Having a smooth rotation is more important.
-	mcconf->foc_f_zv = 20000.0;
+	mcconf->foc_f_sw = 20000.0;
 	mc_interface_set_configuration(mcconf);
 
 #ifdef HW_HAS_DUAL_MOTORS
 	mc_interface_select_motor_thread(2);
-	mcconf_second->foc_f_zv = 20000.0;
-	mc_interface_set_configuration(mcconf_second);
+	mc_interface_set_configuration(mcconf);
 	mc_interface_select_motor_thread(1);
 #endif
 
@@ -1673,7 +1642,6 @@ int conf_general_detect_apply_all_foc(float max_power_loss,
 		mcconf_old->motor_type = MOTOR_TYPE_FOC;
 		mcconf_old->foc_motor_r = r;
 		mcconf_old->foc_motor_l = l;
-		mcconf_old->foc_motor_ld_lq_diff = ld_lq_diff;
 		mcconf_old->foc_motor_flux_linkage = lambda;
 
 		if (mc_interface_temp_motor_filtered() > -10) {
@@ -1692,7 +1660,6 @@ int conf_general_detect_apply_all_foc(float max_power_loss,
 		mcconf_old_second->motor_type = MOTOR_TYPE_FOC;
 		mcconf_old_second->foc_motor_r = r_l_imax_args.r;
 		mcconf_old_second->foc_motor_l = r_l_imax_args.l;
-		mcconf_old_second->foc_motor_ld_lq_diff = r_l_imax_args.ld_lq_diff;
 		mcconf_old_second->foc_motor_flux_linkage = linkage_args.linkage;
 		conf_general_calc_apply_foc_cc_kp_ki_gain(mcconf_old_second, 1000);
 		mc_interface_select_motor_thread(2);
@@ -1758,7 +1725,6 @@ int conf_general_detect_apply_all_foc(float max_power_loss,
 	mempools_free_mcconf(mcconf);
 	mempools_free_mcconf(mcconf_old);
 #ifdef HW_HAS_DUAL_MOTORS
-	mempools_free_mcconf(mcconf_second);
 	mempools_free_mcconf(mcconf_old_second);
 #endif
 
@@ -1835,17 +1801,8 @@ int conf_general_detect_apply_all_foc_can(bool detect_can, float max_power_loss,
 	mc_interface_set_configuration(mcconf);
 #ifdef HW_HAS_DUAL_MOTORS
 	mc_interface_select_motor_thread(2);
-	mc_configuration *mcconf_second = mempools_alloc_mcconf();
-	*mcconf_second = *mc_interface_get_configuration();
-
-	mcconf_second->l_in_current_min = mcconf->l_in_current_min;
-	mcconf_second->l_in_current_max = mcconf->l_in_current_max;
-	mcconf_second->foc_openloop_rpm = mcconf->foc_openloop_rpm;
-	mcconf_second->foc_sl_erpm = mcconf->foc_sl_erpm;
-
-	mc_interface_set_configuration(mcconf_second);
+	mc_interface_set_configuration(mcconf);
 	mc_interface_select_motor_thread(1);
-	mempools_free_mcconf(mcconf_second);
 #endif
 
 	int can_devs = 0;

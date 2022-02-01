@@ -39,9 +39,9 @@
 
 // Threads
 static THD_FUNCTION(chuk_thread, arg);
-static THD_WORKING_AREA(chuk_thread_wa, 512);
+static THD_WORKING_AREA(chuk_thread_wa, 1024);
 static THD_FUNCTION(output_thread, arg);
-static THD_WORKING_AREA(output_thread_wa, 512);
+static THD_WORKING_AREA(output_thread_wa, 1024);
 
 // Private variables
 static volatile bool stop_now = true;
@@ -313,11 +313,7 @@ static THD_FUNCTION(output_thread, arg) {
 					can_status_msg *msg = comm_can_get_status_msg_index(i);
 
 					if (msg->id >= 0 && UTILS_AGE_S(msg->rx_time) < MAX_CAN_AGE) {
-						if (fabsf(pid_rpm) > mcconf->s_pid_min_erpm) {
-							comm_can_set_current(msg->id, current);
-						} else {
-							comm_can_set_duty(msg->id, 0.0);
-						}
+						comm_can_set_current(msg->id, current);
 					}
 				}
 			}

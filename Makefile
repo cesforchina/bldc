@@ -3,8 +3,6 @@
 # NOTE: Can be overridden externally.
 #
 
-USE_LISPBM=1
-
 # Compiler options here.
 ifeq ($(USE_OPT),)
   USE_OPT = -O2 -ggdb -fomit-frame-pointer -falign-functions=16 -std=gnu99 -D_GNU_SOURCE
@@ -44,7 +42,7 @@ endif
 
 # Enable this if you want to see the full log while compiling.
 ifeq ($(USE_VERBOSE_COMPILE),)
-  USE_VERBOSE_COMPILE = no
+  USE_VERBOSE_COMPILE = yes
 endif
 
 # If enabled, this option makes the build process faster by not compiling
@@ -112,13 +110,8 @@ include nrf/nrf.mk
 include libcanard/canard.mk
 include imu/imu.mk
 include lora/lora.mk
-include lzo/lzo.mk
+include compression/compression.mk
 include blackmagic/blackmagic.mk
-
-ifeq ($(USE_LISPBM),1)
-  include lispBM/lispbm.mk
-  USE_OPT += -DUSE_LISPBM
-endif
 
 # Define linker script file here
 LDSCRIPT= ld_eeprom_emu.ld
@@ -174,13 +167,9 @@ CSRC = $(STARTUPSRC) \
        $(CANARDSRC) \
        $(IMUSRC) \
        $(LORASRC) \
-       $(LZOSRC) \
+       $(COMPRESSIONSRC) \
        $(BLACKMAGICSRC) \
        qmlui/qmlui.c
-       
-ifeq ($(USE_LISPBM),1)
-  CSRC += $(LISPBMSRC)
-endif
 
 # C++ sources that can be compiled in ARM or THUMB mode depending on the global
 # setting.
@@ -221,15 +210,11 @@ INCDIR = $(STARTUPINC) $(KERNINC) $(PORTINC) $(OSALINC) \
          $(CANARDINC) \
          $(IMUINC) \
          $(LORAINC) \
-         $(LZOINC) \
+         $(COMPRESSIONINC) \
          $(BLACKMAGICINC) \
          qmlui \
          qmlui/hw \
          qmlui/app
-
-ifeq ($(USE_LISPBM),1)
-  INCDIR += $(LISPBMINC)
-endif
 
 ifdef app_custom_mkfile
 include $(app_custom_mkfile)
@@ -337,6 +322,3 @@ upload-pi-remote: build/$(PROJECT).elf
 
 debug-start:
 	openocd -f stm32-bv_openocd.cfg
-
-size: build/$(PROJECT).elf
-	@$(SZ) $<
