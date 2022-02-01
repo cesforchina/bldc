@@ -1,5 +1,5 @@
 /*
-	Copyright 2016 - 2020 Benjamin Vedder	benjamin@vedder.se
+	Copyright 2016 - 2022 Benjamin Vedder	benjamin@vedder.se
 
 	This file is part of the VESC firmware.
 
@@ -29,10 +29,6 @@
 #include "utils.h"
 #include "timeout.h"
 #include "encoder.h"
-#include "drv8301.h"
-#include "drv8305.h"
-#include "drv8320s.h"
-#include "drv8323s.h"
 #include "app.h"
 #include "comm_usb.h"
 #include "comm_usb_serial.h"
@@ -104,14 +100,15 @@ void terminal_process_string(char *str) {
 	} else if (strcmp(argv[0], "threads") == 0) {
 		thread_t *tp;
 		static const char *states[] = {CH_STATE_NAMES};
-		commands_printf("    addr    stack prio refs     state           name motor time    ");
-		commands_printf("-------------------------------------------------------------------");
+		commands_printf("    addr    stack prio refs     state           name motor stackmin  time    ");
+		commands_printf("-----------------------------------------------------------------------------");
 		tp = chRegFirstThread();
 		do {
-			commands_printf("%.8lx %.8lx %4lu %4lu %9s %14s %5lu %lu (%.1f %%)",
+			int stack_left = utils_check_min_stack_left(tp);
+			commands_printf("%.8lx %.8lx %4lu %4lu %9s %14s %5lu %8d  %lu (%.1f %%)",
 					(uint32_t)tp, (uint32_t)tp->p_ctx.r13,
 					(uint32_t)tp->p_prio, (uint32_t)(tp->p_refs - 1),
-					states[tp->p_state], tp->p_name, tp->motor_selected, (uint32_t)tp->p_time,
+					states[tp->p_state], tp->p_name, tp->motor_selected, stack_left, (uint32_t)tp->p_time,
 					(double)(100.0 * (float)tp->p_time / (float)chVTGetSystemTimeX()));
 			tp = chRegNextThread(tp);
 		} while (tp != NULL);
@@ -165,7 +162,7 @@ void terminal_process_string(char *str) {
 	} else if (strcmp(argv[0], "dist") == 0) {
 		commands_printf("Trip dist.      : %.2f m", (double)mc_interface_get_distance());
 		commands_printf("Trip dist. (ABS): %.2f m", (double)mc_interface_get_distance_abs());
-		commands_printf("Odometer        : %u   m\n", mc_interface_get_odometer());
+		commands_printf("Odometer        : %llu m\n", mc_interface_get_odometer());
 	} else if (strcmp(argv[0], "tim") == 0) {
 		chSysLock();
 		volatile int t1_cnt = TIM1->CNT;
@@ -198,7 +195,7 @@ void terminal_process_string(char *str) {
 		commands_printf("Current 1 sample: %u", current1_samp);
 		commands_printf("Current 2 sample: %u\n", current2_samp);
 	} else if (strcmp(argv[0], "volt") == 0) {
-		commands_printf("Input voltage: %.2f\n", (double)GET_INPUT_VOLTAGE());
+		commands_printf("Input voltage: %.2f\n", (double)mc_interface_get_input_voltage_filtered());
 #ifdef HW_HAS_GATE_DRIVER_SUPPLY_MONITOR
 		commands_printf("Gate driver power supply output voltage: %.2f\n", (double)GET_GATE_DRIVER_SUPPLY_VOLTAGE());
 #endif
@@ -426,9 +423,10 @@ void terminal_process_string(char *str) {
 
 		float res = 0.0;
 		float ind = 0.0;
-		mcpwm_foc_measure_res_ind(&res, &ind);
+		float ld_lq_diff = 0.0;
+		mcpwm_foc_measure_res_ind(&res, &ind, &ld_lq_diff);
 		commands_printf("Resistance: %.6f ohm", (double)res);
-		commands_printf("Inductance: %.2f microhenry\n", (double)ind);
+		commands_printf("Inductance: %.2f uH (Lq-Ld: %.2f uH)\n", (double)ind, (double)ld_lq_diff);
 
 		mc_interface_set_configuration(mcconf_old);
 
@@ -447,13 +445,13 @@ void terminal_process_string(char *str) {
 
 				mcconf->motor_type = MOTOR_TYPE_FOC;
 				mc_interface_set_configuration(mcconf);
-				const float res = (3.0 / 2.0) * mcconf->foc_motor_r;
 
 				// Disable timeout
 				systime_t tout = timeout_get_timeout_msec();
 				float tout_c = timeout_get_brake_current();
+				KILL_SW_MODE tout_ksw = timeout_get_kill_sw_mode();
 				timeout_reset();
-				timeout_configure(60000, 0.0);
+				timeout_configure(60000, 0.0, KILL_SW_MODE_DISABLED);
 
 				for (int i = 0;i < 100;i++) {
 					mc_interface_set_duty(((float)i / 100.0) * duty);
@@ -473,19 +471,20 @@ void terminal_process_string(char *str) {
 				}
 
 				mc_interface_release_motor();
+				mc_interface_wait_for_motor_release(1.0);
 				mc_interface_set_configuration(mcconf_old);
 
 				mempools_free_mcconf(mcconf);
 				mempools_free_mcconf(mcconf_old);
 
 				// Enable timeout
-				timeout_configure(tout, tout_c);
+				timeout_configure(tout, tout_c, tout_ksw);
 
 				vq_avg /= samples;
 				rpm_avg /= samples;
 				iq_avg /= samples;
 
-				float linkage = (vq_avg - res * iq_avg) / (rpm_avg * ((2.0 * M_PI) / 60.0));
+				float linkage = (vq_avg - mcconf->foc_motor_r * iq_avg) / RPM2RADPS_f(rpm_avg);
 
 				commands_printf("Flux linkage: %.7f\n", (double)linkage);
 			} else {
@@ -527,6 +526,16 @@ void terminal_process_string(char *str) {
 	} else if (strcmp(argv[0], "foc_state") == 0) {
 		mcpwm_foc_print_state();
 		commands_printf(" ");
+	} else if (strcmp(argv[0], "foc_dc_cal") == 0) {
+		commands_printf("Performing DC offset calibration...");
+		int res = mcpwm_foc_dc_cal(true);
+		if (res >= 0) {
+			conf_general_store_mc_configuration((mc_configuration*)mc_interface_get_configuration(),
+					mc_interface_get_motor_thread() == 2);
+			commands_printf("Done!\n");
+		} else {
+			commands_printf("DC Cal Failed: %d\n", res);
+		}
 	} else if (strcmp(argv[0], "hw_status") == 0) {
 		commands_printf("Firmware: %d.%d", FW_VERSION_MAJOR, FW_VERSION_MINOR);
 #ifdef HW_NAME
@@ -538,15 +547,34 @@ void terminal_process_string(char *str) {
 				STM32_UUID_8[8], STM32_UUID_8[9], STM32_UUID_8[10], STM32_UUID_8[11]);
 		commands_printf("Permanent NRF found: %s", conf_general_permanent_nrf_found ? "Yes" : "No");
 
-		int curr0_offset;
-		int curr1_offset;
-		int curr2_offset;
+		commands_printf("Odometer : %llu m", mc_interface_get_odometer());
+		commands_printf("Runtime  : %llu s", g_backup.runtime);
+
+		float curr0_offset;
+		float curr1_offset;
+		float curr2_offset;
 
 		mcpwm_foc_get_current_offsets(&curr0_offset, &curr1_offset, &curr2_offset,
 				mc_interface_get_motor_thread() == 2);
 
-		commands_printf("FOC Current Offsets: %d %d %d",
-				curr0_offset, curr1_offset, curr2_offset);
+		commands_printf("FOC Current Offsets: %.2f %.2f %.2f",
+				(double)curr0_offset, (double)curr1_offset, (double)curr2_offset);
+
+		float v0_offset;
+		float v1_offset;
+		float v2_offset;
+
+		mcpwm_foc_get_voltage_offsets(&v0_offset, &v1_offset, &v2_offset,
+				mc_interface_get_motor_thread() == 2);
+
+		commands_printf("FOC Voltage Offsets: %.4f %.4f %.4f",
+				(double)v0_offset, (double)v1_offset, (double)v2_offset);
+
+		mcpwm_foc_get_voltage_offsets_undriven(&v0_offset, &v1_offset, &v2_offset,
+				mc_interface_get_motor_thread() == 2);
+
+		commands_printf("FOC Voltage Offsets Undriven: %.4f %.4f %.4f",
+				(double)v0_offset, (double)v1_offset, (double)v2_offset);
 
 #ifdef COMM_USE_USB
 		commands_printf("USB config events: %d", comm_usb_serial_configured_cnt());
@@ -641,7 +669,7 @@ void terminal_process_string(char *str) {
 			sscanf(argv[2], "%f", &time);
 			sscanf(argv[3], "%f", &angle);
 
-			if (current > 0.0 && current <= mc_interface_get_configuration()->l_current_max &&
+			if (fabsf(current) <= mc_interface_get_configuration()->l_current_max &&
 					angle >= 0.0 && angle <= 360.0) {
 				if (time <= 1e-6) {
 					timeout_reset();
@@ -660,6 +688,8 @@ void terminal_process_string(char *str) {
 							commands_printf("T left: %.2f s", (double)(time - t));
 						}
 					}
+
+					mc_interface_set_current(0.0);
 
 					commands_printf("Done\n");
 				}
@@ -691,7 +721,7 @@ void terminal_process_string(char *str) {
 #endif
 					commands_printf("Motor Current       : %.1f A", (double)(mcconf->l_current_max));
 					commands_printf("Motor R             : %.2f mOhm", (double)(mcconf->foc_motor_r * 1e3));
-					commands_printf("Motor L             : %.2f microH", (double)(mcconf->foc_motor_l * 1e6));
+					commands_printf("Motor L             : %.2f uH", (double)(mcconf->foc_motor_l * 1e6));
 					commands_printf("Motor Flux Linkage  : %.3f mWb", (double)(mcconf->foc_motor_flux_linkage * 1e3));
 					commands_printf("Temp Comp           : %s", mcconf->foc_temp_comp ? "true" : "false");
 					if (mcconf->foc_temp_comp) {
@@ -713,7 +743,7 @@ void terminal_process_string(char *str) {
 					commands_printf("\nMOTOR 2\n");
 					commands_printf("Motor Current       : %.1f A", (double)(mcconf->l_current_max));
 					commands_printf("Motor R             : %.2f mOhm", (double)(mcconf->foc_motor_r * 1e3));
-					commands_printf("Motor L             : %.2f microH", (double)(mcconf->foc_motor_l * 1e6));
+					commands_printf("Motor L             : %.2f uH", (double)(mcconf->foc_motor_l * 1e6));
 					commands_printf("Motor Flux Linkage  : %.3f mWb", (double)(mcconf->foc_motor_flux_linkage * 1e3));
 					commands_printf("Temp Comp           : %s", mcconf->foc_temp_comp ? "true" : "false");
 					if (mcconf->foc_sensor_mode == FOC_SENSOR_MODE_SENSORLESS) {
@@ -832,15 +862,25 @@ void terminal_process_string(char *str) {
 		}
 	} else if (strcmp(argv[0], "encoder") == 0) {
 		const volatile mc_configuration *mcconf = mc_interface_get_configuration();
+
 		if (mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_AS5047_SPI ||
 				mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_MT6816_SPI ||
 				mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_AD2S1205 ||
 				mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_TS5700N8501 ||
 				mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_TS5700N8501_MULTITURN) {
-			commands_printf("SPI encoder value: %d, errors: %d, error rate: %.3f %%",
-					(unsigned int)encoder_spi_get_val(),
-					encoder_spi_get_error_cnt(),
-					(double)encoder_spi_get_error_rate() * (double)100.0);
+
+			if (mcconf->m_sensor_port_mode != SENSOR_PORT_MODE_AS5047_SPI) {
+				commands_printf("SPI encoder value: %d, errors: %d, error rate: %.3f %%",
+						(unsigned int)encoder_spi_get_val(),
+						encoder_spi_get_error_cnt(),
+						(double)encoder_spi_get_error_rate() * (double)100.0);
+			} else {
+				commands_printf("SPI encoder value: %d, errors: %d, error rate: %.3f %%, Connected: %u",
+						(unsigned int)encoder_spi_get_val(),
+						encoder_spi_get_error_cnt(),
+						(double)encoder_spi_get_error_rate() * (double)100.0,
+						encoder_AS504x_get_diag().is_connected);
+			}
 
 			if (mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_TS5700N8501 ||
 					mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_TS5700N8501_MULTITURN) {
@@ -856,6 +896,22 @@ void terminal_process_string(char *str) {
 						encoder_get_no_magnet_error_cnt(),
 						(double)encoder_get_no_magnet_error_rate() * (double)100.0);
 			}
+
+#if AS504x_USE_SW_MOSI_PIN || AS5047_USE_HW_SPI_PINS
+			if (mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_AS5047_SPI) {
+				commands_printf("\nAS5047 DIAGNOSTICS:\n"
+						"AGC       : %u\n"
+						"Magnitude : %u\n"
+						"COF       : %u\n"
+						"OCF       : %u\n"
+						"COMP_low  : %u\n"
+						"COMP_high : %u\n",
+						encoder_AS504x_get_diag().AGC_value, encoder_AS504x_get_diag().magnitude,
+						encoder_AS504x_get_diag().is_COF, encoder_AS504x_get_diag().is_OCF,
+						encoder_AS504x_get_diag().is_Comp_low,
+						encoder_AS504x_get_diag().is_Comp_high);
+			}
+#endif
 		}
 
 		if (mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_SINCOS) {
@@ -878,6 +934,10 @@ void terminal_process_string(char *str) {
 			commands_printf("Resolver Loss Of Signal (>57%c error): errors: %d, error rate: %.3f %%", 0xB0,
 					encoder_resolver_loss_of_signal_error_cnt(),
 					(double)encoder_resolver_loss_of_signal_error_rate() * (double)100.0);
+		}
+
+		if (mcconf->m_sensor_port_mode == SENSOR_PORT_MODE_ABI) {
+			commands_printf("Index found: %d\n", encoder_index_found());
 		}
 	} else if (strcmp(argv[0], "encoder_clear_errors") == 0) {
 		encoder_ts57n8501_reset_errors();
@@ -956,6 +1016,7 @@ void terminal_process_string(char *str) {
 
 				mc_interface_lock_override_once();
 				mc_interface_release_motor();
+				mc_interface_wait_for_motor_release(1.0);
 				mcconf->motor_type = motor_type_old;
 				mc_interface_set_configuration(mcconf);
 				mempools_free_mcconf(mcconf);
@@ -1048,6 +1109,23 @@ void terminal_process_string(char *str) {
 		commands_printf("MC CFG crc: 0x%04X (stored)  0x%04X (recalc)", mc_crc0, mc_crc1);
 		commands_printf("APP CFG crc: 0x%04X (stored)  0x%04X (recalc)", app_crc0, app_crc1);
 		commands_printf("Discrepancy is expected due to run-time recalculation of config params.\n");
+	} else if (strcmp(argv[0], "drv_reset_faults") == 0) {
+		HW_RESET_DRV_FAULTS();
+	} else if (strcmp(argv[0], "update_pid_pos_offset") == 0) {
+		if (argc == 3) {
+			float angle_now = -500.0;
+			int store = false;
+
+			sscanf(argv[1], "%f", &angle_now);
+			sscanf(argv[2], "%d", &store);
+
+			if (angle_now > -360.0 && angle_now < 360.0) {
+				mc_interface_update_pid_pos_offset(angle_now, store);
+				commands_printf("OK\n");
+			} else {
+				commands_printf("Invalid arguments\n");
+			}
+		}
 	}
 
 	// The help command
@@ -1128,11 +1206,14 @@ void terminal_process_string(char *str) {
 
 		commands_printf("measure_linkage_openloop [current] [duty] [erpm_per_sec] [motor_res] [motor_ind]");
 		commands_printf("  Run the motor in openloop FOC and measure the flux linkage");
-		commands_printf("  example measure_linkage 5 0.5 1000 0.076 0.000015");
+		commands_printf("  example measure_linkage_openloop 5 0.5 1000 0.076 0.000015");
 		commands_printf("  tip: measure the resistance with measure_res first");
 
 		commands_printf("foc_state");
 		commands_printf("  Print some FOC state variables.");
+
+		commands_printf("foc_dc_cal");
+		commands_printf("  Calibrate current and voltage DC offsets.");
 
 		commands_printf("hw_status");
 		commands_printf("  Print some hardware status information.");
@@ -1187,6 +1268,12 @@ void terminal_process_string(char *str) {
 		commands_printf("crc");
 		commands_printf("  Print CRC values.");
 
+		commands_printf("drv_reset_faults");
+		commands_printf("  Reset gate driver faults (if possible).");
+
+		commands_printf("update_pid_pos_offset [angle_now] [store]");
+		commands_printf("  Update position PID offset.");
+
 		for (int i = 0;i < callback_write;i++) {
 			if (callbacks[i].cbf == 0) {
 				continue;
@@ -1216,6 +1303,14 @@ void terminal_add_fault_data(fault_data *data) {
 	fault_vec[fault_vec_write++] = *data;
 	if (fault_vec_write >= FAULT_VEC_LEN) {
 		fault_vec_write = 0;
+	}
+}
+
+mc_fault_code terminal_get_first_fault(void) {
+	if (fault_vec_write == 0) {
+		return FAULT_CODE_NONE;
+	} else {
+		return fault_vec[0].fault;
 	}
 }
 
