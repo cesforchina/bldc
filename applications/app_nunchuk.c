@@ -23,7 +23,8 @@
 #include "hw.h"
 #include "mc_interface.h"
 #include "commands.h"
-#include "utils.h"
+#include "utils_math.h"
+#include "utils_sys.h"
 #include "timeout.h"
 #include <string.h>
 #include <math.h>
@@ -84,8 +85,28 @@ void app_nunchuk_stop(void) {
 	}
 }
 
-float app_nunchuk_get_decoded_chuk(void) {
+float app_nunchuk_get_decoded_x(void) {
+	return ((float)chuck_d.js_x - 128.0) / 128.0;
+}
+
+float app_nunchuk_get_decoded_y(void) {
 	return ((float)chuck_d.js_y - 128.0) / 128.0;
+}
+
+bool app_nunchuk_get_bt_c(void) {
+	return chuck_d.bt_c;
+}
+
+bool app_nunchuk_get_bt_z(void) {
+	return chuck_d.bt_z;
+}
+
+bool app_nunchuk_get_is_rev(void) {
+	return chuck_d.is_rev;
+}
+
+float app_nunchuk_get_update_age(void) {
+	return UTILS_AGE_S(last_update_time);
 }
 
 void app_nunchuk_update_output(chuck_data *data) {
@@ -97,7 +118,7 @@ void app_nunchuk_update_output(chuck_data *data) {
 	}
 
 	chuck_d = *data;
-	last_update_time = chVTGetSystemTime();
+	last_update_time = chVTGetSystemTimeX();
 	timeout_reset();
 }
 
@@ -263,7 +284,7 @@ static THD_FUNCTION(output_thread, arg) {
 
 		was_z = chuck_d.bt_z;
 
-		float out_val = app_nunchuk_get_decoded_chuk();
+		float out_val = app_nunchuk_get_decoded_y();
 		utils_deadband(&out_val, config.hyst, 1.0);
 		out_val = utils_throttle_curve(out_val, config.throttle_exp, config.throttle_exp_brake, config.throttle_exp_mode);
 
@@ -335,15 +356,15 @@ static THD_FUNCTION(output_thread, arg) {
 
 		if (config.ctrl_type == CHUK_CTRL_TYPE_CURRENT_BIDIRECTIONAL) {
 			if ((out_val > 0.0 && duty_now > 0.0) || (out_val < 0.0 && duty_now < 0.0)) {
-				current = out_val * mcconf->lo_current_motor_max_now;
+				current = out_val * mcconf->lo_current_max;
 			} else {
-				current = out_val * fabsf(mcconf->lo_current_motor_min_now);
+				current = out_val * fabsf(mcconf->lo_current_min);
 			}
 		} else {
 			if (out_val >= 0.0 && ((is_reverse ? -1.0 : 1.0) * duty_now) > 0.0) {
-				current = out_val * mcconf->lo_current_motor_max_now;
+				current = out_val * mcconf->lo_current_max;
 			} else {
-				current = out_val * fabsf(mcconf->lo_current_motor_min_now);
+				current = out_val * fabsf(mcconf->lo_current_min);
 			}
 		}
 

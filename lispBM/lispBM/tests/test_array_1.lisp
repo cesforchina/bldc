@@ -1,4 +1,4 @@
 (define a "hello")
 
-(= (array-read a 3u28) \#l)
+(check (= (bufget-i8 a 3u) \#l))
 

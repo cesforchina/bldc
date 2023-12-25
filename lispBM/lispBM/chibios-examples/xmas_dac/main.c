@@ -28,15 +28,24 @@
 
 #include "lispbm.h"
 
-#define EVAL_WA_SIZE THD_WORKING_AREA_SIZE(1024)
+#define EVAL_WA_SIZE THD_WORKING_AREA_SIZE(2048)
 #define EVAL_CPS_STACK_SIZE 256
+#define GC_STACK_SIZE 256
+#define PRINT_STACK_SIZE 256
+#define EXTENSION_STORAGE_SIZE 256
+
+#define WAIT_TIMEOUT 2500
 
 #define HEAP_SIZE 8192
 
+uint32_t gc_stack_storage[GC_STACK_SIZE];
+uint32_t print_stack_storage[PRINT_STACK_SIZE];
+extension_fptr extension_storage[EXTENSION_STORAGE_SIZE];
+
 lbm_cons_t heap[HEAP_SIZE] __attribute__ ((aligned (8)));
 
-static lbm_tokenizer_string_state_t string_tok_state;
-static lbm_tokenizer_char_stream_t string_tok;
+static lbm_string_channel_state_t string_tok_state;
+static lbm_char_channel_t string_tok;
 
 BaseSequentialStream *chp = NULL;
 
@@ -221,17 +230,17 @@ lbm_value ext_print(lbm_value *args, lbm_uint argn) {
   for (lbm_uint i = 0; i < argn; i ++) {
     lbm_value t = args[i];
 
-    if (lbm_is_ptr(t) && lbm_type_of(t) == LBM_PTR_TYPE_ARRAY) {
+    if (lbm_is_ptr(t) && lbm_type_of(t) == LBM_TYPE_ARRAY) {
       lbm_array_header_t *array = (lbm_array_header_t *)lbm_car(t);
       switch (array->elt_type){
-      case LBM_VAL_TYPE_CHAR:
+      case LBM_TYPE_CHAR:
         chprintf(chp,"%s", (char*)array + 8);
         break;
       default:
         return lbm_enc_sym(SYM_NIL);
         break;
       }
-    } else if (lbm_type_of(t) == LBM_VAL_TYPE_CHAR) {
+    } else if (lbm_type_of(t) == LBM_TYPE_CHAR) {
       if (lbm_dec_char(t) =='\n') {
         chprintf(chp, "\r\n");
       } else {
@@ -316,8 +325,11 @@ int main(void) {
 
 
   if (!lbm_init(heap, HEAP_SIZE,
-                   memory_array, LBM_MEMORY_SIZE_8K,
-                   bitmap_array, LBM_MEMORY_BITMAP_SIZE_8K)) {
+                gc_stack_storage, GC_STACK_SIZE,
+                memory_array, LBM_MEMORY_SIZE_8K,
+                bitmap_array, LBM_MEMORY_BITMAP_SIZE_8K,
+                print_stack_storage, PRINT_STACK_SIZE,
+                extension_storage, EXTENSION_STORAGE_SIZE)) {
     chprintf(chp,"Initializing LispBM failed\r\n");
     return 0;
   }
@@ -348,15 +360,6 @@ int main(void) {
     return 1;
   }
 
-  prelude_load(&string_tok_state,
-                   &string_tok);
-
-  lbm_cid cid = lbm_load_and_eval_program(&string_tok);
-
-  lbm_continue_eval();
-
-  lbm_wait_ctx(cid);
-
   chprintf(chp,"Lisp REPL started (ChibiOS)!\r\n");
 
   while (1) {
@@ -384,7 +387,7 @@ int main(void) {
     } else if (strncmp(str, ":wait", 5) == 0) {
       int cid = atoi(str+5);
       chprintf(chp,"waiting for cid: %d\r\n", cid);
-      lbm_wait_ctx(cid);
+      lbm_wait_ctx(cid, WAIT_TIMEOUT);
     } else if (strncmp(str, ":read", 5) == 0) {
       memset(file_buffer, 0, 4096);
       bool done = false;
@@ -406,15 +409,15 @@ int main(void) {
       chprintf(chp, "received %d bytes\r\n", strlen(file_buffer));
 
       if (done) {
-        lbm_value t;
+        //lbm_value t;
 
-        lbm_create_char_stream_from_string(&string_tok_state,
-                                              &string_tok,
-                                              file_buffer);
+        lbm_create_string_char_channel(&string_tok_state,
+                                       &string_tok,
+                                       file_buffer);
         lbm_cid cid = lbm_load_and_eval_program(&string_tok);
 
         lbm_continue_eval();
-        lbm_wait_ctx((lbm_cid)cid);
+        lbm_wait_ctx((lbm_cid)cid, WAIT_TIMEOUT);
       }
     } else {
 
@@ -429,16 +432,16 @@ int main(void) {
         sleep_callback(10);
       }
 
-      lbm_create_char_stream_from_string(&string_tok_state,
-                                            &string_tok,
-                                            str);
+      lbm_create_string_char_channel(&string_tok_state,
+                                     &string_tok,
+                                     str);
 
       lbm_cid cid = lbm_load_and_eval_expression(&string_tok);
 
       lbm_continue_eval();
 
       printf("started ctx: %u\n", cid);
-      lbm_wait_ctx((lbm_cid)cid);
+      lbm_wait_ctx((lbm_cid)cid, WAIT_TIMEOUT);
     }
   }
 }

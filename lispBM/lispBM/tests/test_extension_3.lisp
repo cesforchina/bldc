@@ -1,1 +1,1 @@
-(= (ext-odd 6) nil)
+(check (eq (ext-odd 6) nil))

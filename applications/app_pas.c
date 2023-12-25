@@ -25,7 +25,7 @@
 #include "stm32f4xx_conf.h"
 #include "mc_interface.h"
 #include "timeout.h"
-#include "utils.h"
+#include "utils_math.h"
 #include "comm_can.h"
 #include "hw.h"
 #include <math.h>
@@ -113,6 +113,10 @@ void app_pas_set_current_sub_scaling(float current_sub_scaling) {
 
 float app_pas_get_current_target_rel(void) {
 	return output_current_rel;
+}
+
+float app_pas_get_pedal_rpm(void) {
+	return pedal_rpm;
 }
 
 void pas_event_handler(void) {

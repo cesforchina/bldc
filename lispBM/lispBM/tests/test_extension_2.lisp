@@ -1,1 +1,1 @@
-(= (ext-even 7) nil)
+(check (eq (ext-even 7) nil))

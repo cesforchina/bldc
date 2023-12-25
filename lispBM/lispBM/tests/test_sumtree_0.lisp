@@ -1,8 +1,8 @@
 (define sumtree
   (lambda (x)
-    (if (= (type-of x) type-i28)
+    (if (eq (type-of x) type-i)
 	x
-      (if (= x 'nil)
+      (if (eq x 'nil)
 	  0
 	(let ((a (sumtree (car x)))
 	      (b (sumtree (cdr x))))
@@ -10,4 +10,4 @@
 	  )))))
 
 
-(= (sumtree (list (list 1 1 1 1 1 1 1 1 1 1) (list 1 2) (list 3 4))) 20)
+(check (= (sumtree (list (list 1 1 1 1 1 1 1 1 1 1) (list 1 2) (list 3 4))) 20))

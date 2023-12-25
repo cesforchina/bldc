@@ -15,14 +15,14 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <lbm_memory.h>
+#include <lbm_types.h>
 #include <string.h>
 
 #include "stack.h"
-#include "lispbm_types.h"
 #include "print.h"
-#include "lispbm_memory.h"
 
-int lbm_stack_allocate(lbm_stack_t *s, unsigned int stack_size) {
+int lbm_stack_allocate(lbm_stack_t *s, lbm_uint stack_size) {
   s->data = lbm_memory_allocate(stack_size);
   s->sp = 0;
   s->size = stack_size;
@@ -32,7 +32,7 @@ int lbm_stack_allocate(lbm_stack_t *s, unsigned int stack_size) {
   return 0;
 }
 
-int lbm_stack_create(lbm_stack_t *s, lbm_uint* data, unsigned int size) {
+int lbm_stack_create(lbm_stack_t *s, lbm_uint* data, lbm_uint size) {
   s->data = data;
   s->sp = 0;
   s->size = size;
@@ -46,18 +46,17 @@ void lbm_stack_free(lbm_stack_t *s) {
   }
 }
 
-int lbm_stack_clear(lbm_stack_t *s) {
+void lbm_stack_clear(lbm_stack_t *s) {
   s->sp = 0;
-  return 1;
 }
 
-lbm_uint *lbm_get_stack_ptr(lbm_stack_t *s, unsigned int n) {
+lbm_uint *lbm_get_stack_ptr(lbm_stack_t *s, lbm_uint n) {
   if (n > s->sp) return NULL;
-  unsigned int index = s->sp - n;
+  lbm_uint index = s->sp - n;
   return &s->data[index];
 }
 
-int lbm_stack_drop(lbm_stack_t *s, unsigned int n) {
+int lbm_stack_drop(lbm_stack_t *s, lbm_uint n) {
 
   if (n > s->sp) return 0;
 
@@ -65,26 +64,55 @@ int lbm_stack_drop(lbm_stack_t *s, unsigned int n) {
   return 1;
 }
 
-int lbm_push_u32(lbm_stack_t *s, lbm_uint val) {
+lbm_uint *lbm_stack_reserve(lbm_stack_t *s, lbm_uint n) {
+
+  if (s->sp + n >= s->size) {
+    return NULL;
+  }
+  lbm_uint *ptr = &s->data[s->sp];
+  s->sp += n;
+  return ptr;
+}
+
+int lbm_push(lbm_stack_t *s, lbm_uint val) {
   int res = 1;
   if (s->sp == s->size) {
     return 0;
   }
-
-  if (!res) return res;
-
-  s->data[s->sp] = val;
-  s->sp++;
-
+  s->data[s->sp++] = val;
   if (s->sp > s->max_sp) s->max_sp = s->sp;
-
   return res;
 }
 
-int lbm_pop_u32(lbm_stack_t *s, lbm_uint *val) {
+int lbm_push_2(lbm_stack_t *s, lbm_uint v1, lbm_uint v2) {
+  if (s->sp + 1 < s->size) {
+    s->data[s->sp++] = v1;
+    s->data[s->sp++] = v2;
+    if (s->sp > s->max_sp) s->max_sp = s->sp;
+    return 1;
+  } else {
+    return 0;
+  }
+}
 
+int lbm_pop(lbm_stack_t *s, lbm_uint *val) {
   s->sp--;
   *val = s->data[s->sp];
-  s->data[s->sp] = 0;
   return 1;
 }
+
+int lbm_pop_2(lbm_stack_t *s, lbm_uint *r0, lbm_uint *r1) {
+  s->sp--;
+  *r0 = s->data[s->sp--];
+  *r1 = s->data[s->sp];
+  return 1;
+}
+
+int lbm_pop_3(lbm_stack_t *s, lbm_uint *r0, lbm_uint *r1, lbm_uint *r2) {
+  s->sp--;
+  *r0 = s->data[s->sp--];
+  *r1 = s->data[s->sp--];
+  *r2 = s->data[s->sp];
+  return 1;
+}
+
